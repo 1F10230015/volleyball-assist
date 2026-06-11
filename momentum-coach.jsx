@@ -347,7 +347,15 @@ async function scoutReport(summary) {
 // カメラまたは動画ファイルから33点の骨格をリアルタイム推定し、オーバーハンドスイング
 // (スパイク/サーブ)を自動検出して採点する。映像は端末内で処理され、外部送信されない。
 const MP_URL = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
-const POSE_MODEL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
+// 検出精度モデル(lite=軽量/full=標準/heavy=高精度)。スマホはfull推奨、heavyはPC向き
+const POSE_MODELS = {
+  lite: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+  full: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task",
+  heavy: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task",
+};
+// 計測に必須のランドマーク(鼻・手首・膝・足首)。これらの可視性が低いフレームは計測除外
+const KEY_VIS_POINTS = [0, 15, 16, 25, 26, 27, 28];
+const SMOOTH_ALPHA = 0.55; // 骨格EMA平滑化係数(大=追従重視、小=滑らか重視)
 const FORM_REF_KEY = "vbmc_form_ref_v1";
 const POSE_LINKS = [[11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24], [23, 25], [25, 27], [24, 26], [26, 28]];
 
@@ -460,6 +468,9 @@ export default function MomentumCoach() {
   const [mirror, setMirror] = useState(false);
   const [camFacing, setCamFacing] = useState("environment"); // スマホは外カメラをデフォルトに
   const [formSource, setFormSource] = useState(null); // "camera" | "file"
+  const [formModel, setFormModel] = useState("full"); // lite | full | heavy
+  const [trackQuality, setTrackQuality] = useState(null); // "good" | "partial"
+  const modelRef = useRef(null); // 現在ロード済みのモデル名
   const [reps, setReps] = useState([]);
   const [liveM, setLiveM] = useState(null);
   const [formKind, setFormKind] = useState("スパイク");
@@ -729,19 +740,28 @@ export default function MomentumCoach() {
     streamRef.current?.getTracks().forEach(t => t.stop());
     streamRef.current = null;
     const v = videoRef.current;
-    if (v) { try { v.pause(); } catch { /* noop */ } }
-    setFormStatus("idle"); setLiveM(null);
+    if (v) { v.onended = null; try { v.pause(); } catch { /* noop */ } }
+    setFormStatus("idle"); setLiveM(null); setTrackQuality(null);
   };
 
   const ensureLandmarker = async () => {
-    if (landmarkerRef.current) return landmarkerRef.current;
+    if (landmarkerRef.current && modelRef.current === formModel) return landmarkerRef.current;
     setFormStatus("loading");
+    if (landmarkerRef.current) { try { landmarkerRef.current.close(); } catch { /* noop */ } landmarkerRef.current = null; }
     const vision = await import(/* webpackIgnore: true */ `${MP_URL}/vision_bundle.mjs`);
     const files = await vision.FilesetResolver.forVisionTasks(`${MP_URL}/wasm`);
-    landmarkerRef.current = await vision.PoseLandmarker.createFromOptions(files, {
-      baseOptions: { modelAssetPath: POSE_MODEL, delegate: "GPU" },
+    const opts = delegate => ({
+      baseOptions: { modelAssetPath: POSE_MODELS[formModel], delegate },
       runningMode: "VIDEO", numPoses: 1,
+      minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.5, minTrackingConfidence: 0.5,
     });
+    try {
+      landmarkerRef.current = await vision.PoseLandmarker.createFromOptions(files, opts("GPU"));
+    } catch {
+      // GPU非対応端末はCPUにフォールバック
+      landmarkerRef.current = await vision.PoseLandmarker.createFromOptions(files, opts("CPU"));
+    }
+    modelRef.current = formModel;
     return landmarkerRef.current;
   };
 
@@ -765,17 +785,28 @@ export default function MomentumCoach() {
     });
   };
 
-  // 1フレームごとの計測+スイング自動検出(状態機械)
+  // 1フレームごとの計測+スイング自動検出(状態機械)。返り値は描画用の平滑化済み骨格
   const processFrame = (lm, tMs) => {
     const fs = frameRef.current;
-    const noseY = lm[0].y;
-    const ankleY = (lm[27].y + lm[28].y) / 2;
+    // ★EMA平滑化: ジッタ(骨格のブレ)による誤計測・誤検出を抑える
+    if (!fs.smooth) fs.smooth = lm.map(p => ({ x: p.x, y: p.y }));
+    else lm.forEach((p, i) => { const s = fs.smooth[i]; s.x += (p.x - s.x) * SMOOTH_ALPHA; s.y += (p.y - s.y) * SMOOTH_ALPHA; });
+    const pts = fs.smooth;
+
+    // ★可視性ゲート: 鼻・手首・膝・足首が映っていないフレームは計測しない(描画のみ)
+    const minVis = Math.min(...KEY_VIS_POINTS.map(i => lm[i].visibility ?? 1));
+    const quality = minVis > 0.5 ? "good" : "partial";
+    if (fs.lastQ !== quality) { fs.lastQ = quality; setTrackQuality(quality); }
+    if (quality === "partial") { fs.prevWrist = null; return pts; }
+
+    const noseY = pts[0].y;
+    const ankleY = (pts[27].y + pts[28].y) / 2;
     const bodyH = Math.max(0.1, ankleY - noseY); // 鼻〜足首の正規化身長
-    const hipY = (lm[23].y + lm[24].y) / 2;
-    const knee = Math.min(angleDeg(lm[23], lm[25], lm[27]), angleDeg(lm[24], lm[26], lm[28]));
-    const rightUp = lm[16].y < lm[15].y;
-    const wrist = rightUp ? lm[16] : lm[15];
-    const elbow = rightUp ? angleDeg(lm[12], lm[14], lm[16]) : angleDeg(lm[11], lm[13], lm[15]);
+    const hipY = (pts[23].y + pts[24].y) / 2;
+    const knee = Math.min(angleDeg(pts[23], pts[25], pts[27]), angleDeg(pts[24], pts[26], pts[28]));
+    const rightUp = pts[16].y < pts[15].y;
+    const wrist = rightUp ? pts[16] : pts[15];
+    const elbow = rightUp ? angleDeg(pts[12], pts[14], pts[16]) : angleDeg(pts[11], pts[13], pts[15]);
     const wristH = (noseY - wrist.y) / bodyH; // 手首が鼻よりどれだけ上か(身長比)
     let speed = 0;
     if (fs.prevWrist && tMs > fs.prevT) speed = Math.hypot(wrist.x - fs.prevWrist.x, wrist.y - fs.prevWrist.y) / bodyH / ((tMs - fs.prevT) / 1000);
@@ -790,7 +821,7 @@ export default function MomentumCoach() {
 
     if (fs.state === "idle" && wristH > 0.05 && tMs - fs.lastRepAt > 800) {
       fs.state = "swing";
-      fs.rep = { maxWristH: wristH, elbowAtMax: elbow, maxSpeed: speed, maxJump: jump, minKnee: Math.min(...fs.kneeWin.map(k => k.knee)) };
+      fs.rep = { startT: tMs, maxWristH: wristH, elbowAtMax: elbow, maxSpeed: speed, maxJump: jump, minKnee: Math.min(...fs.kneeWin.map(k => k.knee)) };
     } else if (fs.state === "swing") {
       const r = fs.rep;
       if (wristH > r.maxWristH) { r.maxWristH = wristH; r.elbowAtMax = elbow; }
@@ -798,11 +829,16 @@ export default function MomentumCoach() {
       r.maxJump = Math.max(r.maxJump, jump);
       if (wristH < -0.02) { // 手首が鼻の下に戻った=スイング終了
         fs.state = "idle"; fs.lastRepAt = tMs;
-        if (r.maxWristH > 0.10) setReps(rs => [...rs, { ...r, score: repScore(r), t: Date.now() }].slice(-30));
+        // ★誤検出フィルタ: 高さ(打点に届いた)+速度(振った)+持続時間(瞬間ノイズでない)を満たすものだけ採用
+        // → 「ただ手を挙げただけ」「一瞬の検出ブレ」はカウントしない
+        if (r.maxWristH > 0.10 && r.maxSpeed >= 2.0 && tMs - r.startT >= 120) {
+          setReps(rs => [...rs, { ...r, score: repScore(r), t: Date.now() }].slice(-30));
+        }
         fs.rep = null;
       }
     }
     if (++fs.frame % 5 === 0) setLiveM({ knee: Math.round(knee), elbow: Math.round(elbow), wristH, jump });
+    return pts;
   };
 
   const startForm = async (source, file, facing = camFacing) => {
@@ -825,24 +861,29 @@ export default function MomentumCoach() {
         v.srcObject = null; v.src = URL.createObjectURL(file); setMirror(false);
       }
       setFormSource(source);
+      v.onended = source === "file" ? () => stopForm() : null; // 動画終了で自動停止
       await v.play();
-      frameRef.current = { state: "idle", lastRepAt: 0, hipBase: null, kneeWin: [], prevWrist: null, prevT: 0, rep: null, frame: 0 };
+      frameRef.current = { state: "idle", lastRepAt: 0, hipBase: null, kneeWin: [], prevWrist: null, prevT: 0, rep: null, frame: 0, smooth: null, lastQ: null };
       runningRef.current = true;
+      setTrackQuality(null);
       setFormStatus("running");
-      const loop = () => {
+      // ★動画ファイルは各フレームを正確に1回ずつ処理(コマ落ち・重複防止)。カメラは描画レートに同期
+      const useRVFC = source === "file" && "requestVideoFrameCallback" in HTMLVideoElement.prototype;
+      const step = () => {
         if (!runningRef.current) return;
         const vid = videoRef.current;
         if (vid && vid.readyState >= 2 && !vid.paused && !vid.ended) {
           try {
-            const res = landmarkerRef.current.detectForVideo(vid, performance.now());
+            const now = performance.now();
+            const res = landmarkerRef.current.detectForVideo(vid, now);
             const lm = res.landmarks?.[0];
-            drawPose(lm);
-            if (lm) processFrame(lm, performance.now());
+            drawPose(lm ? processFrame(lm, now) : null);
           } catch { /* フレーム失敗は無視 */ }
         }
-        rafRef.current = requestAnimationFrame(loop);
+        if (useRVFC) vid.requestVideoFrameCallback(() => step());
+        else rafRef.current = requestAnimationFrame(step);
       };
-      loop();
+      step();
     } catch (e) {
       stopForm();
       setFormErr(source === "camera"
@@ -1414,6 +1455,21 @@ export default function MomentumCoach() {
               <input value={heightCm} onChange={e => setHeightCm(e.target.value.replace(/[^0-9]/g, ""))} maxLength={3} placeholder="身長cm"
                 style={{ width: 70, background: "#0A0F1E", border: `1px solid ${C.line}`, borderRadius: 10, color: C.txt, padding: "10px 8px", fontSize: 13, fontWeight: 700, fontFamily: "'Noto Sans JP', sans-serif", outline: "none", textAlign: "center" }} />
             </div>
+            {/* ★検出精度モード(モデル切替) */}
+            <div style={{ display: "grid", gridTemplateColumns: "auto 1fr 1fr 1fr", gap: 6, alignItems: "center", marginTop: 8 }}>
+              <span style={{ fontSize: 10, color: C.dim, fontWeight: 800, paddingRight: 4 }}>検出精度</span>
+              {[["lite", "軽量"], ["full", "標準"], ["heavy", "高精度"]].map(([m, lbl]) => (
+                <button key={m} onClick={() => setFormModel(m)} disabled={formStatus !== "idle"}
+                  style={btn(formModel === m ? "linear-gradient(160deg, #1f5e40, #174530)" : "#232d47", {
+                    padding: "8px 4px", fontSize: 11,
+                    border: formModel === m ? `1px solid ${C.ok}` : "1px solid transparent",
+                    opacity: formStatus !== "idle" ? 0.5 : 1,
+                  })}>
+                  {lbl}
+                </button>
+              ))}
+            </div>
+            <div style={{ fontSize: 9, color: C.dim, marginTop: 4 }}>標準=推奨。高精度はPC向き(スマホでは動作が重くなる場合あり)。停止中のみ変更できます。</div>
           </div>
 
           <div style={{ ...panel, padding: 10 }}>
@@ -1423,6 +1479,11 @@ export default function MomentumCoach() {
               <span style={{ position: "absolute", top: 8, left: 8, fontSize: 10, fontWeight: 900, padding: "4px 10px", borderRadius: 8, background: "rgba(10,15,30,.8)", color: formStatus === "running" ? C.ok : formStatus === "loading" ? C.warn : C.dim }}>
                 {formStatus === "running" ? "● 解析中(端末内処理)" : formStatus === "loading" ? "◌ AIエンジン読込中…" : "○ 停止中"}
               </span>
+              {formStatus === "running" && trackQuality && (
+                <span style={{ position: "absolute", top: 8, right: 8, fontSize: 10, fontWeight: 900, padding: "4px 10px", borderRadius: 8, background: "rgba(10,15,30,.8)", color: trackQuality === "good" ? C.ok : C.warn }}>
+                  {trackQuality === "good" ? "🟢 全身検出中" : "🟠 全身が映っていません"}
+                </span>
+              )}
               {formStatus === "idle" && !formErr && (
                 <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 36 }}>🤸</div>
               )}
