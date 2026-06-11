@@ -435,6 +435,8 @@ export default function MomentumCoach() {
   const [formStatus, setFormStatus] = useState("idle"); // idle | loading | running
   const [formErr, setFormErr] = useState(null);
   const [mirror, setMirror] = useState(false);
+  const [camFacing, setCamFacing] = useState("environment"); // スマホは外カメラをデフォルトに
+  const [formSource, setFormSource] = useState(null); // "camera" | "file"
   const [reps, setReps] = useState([]);
   const [liveM, setLiveM] = useState(null);
   const [formKind, setFormKind] = useState("スパイク");
@@ -780,18 +782,26 @@ export default function MomentumCoach() {
     if (++fs.frame % 5 === 0) setLiveM({ knee: Math.round(knee), elbow: Math.round(elbow), wristH, jump });
   };
 
-  const startForm = async (source, file) => {
+  const startForm = async (source, file, facing = camFacing) => {
     try {
       setFormErr(null);
       await ensureLandmarker();
+      // 既存ループ・ストリームを止めてから開始(カメラ切替時の二重ループ防止)
+      runningRef.current = false;
+      cancelAnimationFrame(rafRef.current);
       const v = videoRef.current;
       streamRef.current?.getTracks().forEach(t => t.stop());
       if (source === "camera") {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 960, height: 540 }, audio: false });
-        v.srcObject = stream; streamRef.current = stream; setMirror(true);
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false,
+        });
+        v.srcObject = stream; streamRef.current = stream;
+        setMirror(facing === "user"); // 内カメラのみ鏡映しにする
       } else {
         v.srcObject = null; v.src = URL.createObjectURL(file); setMirror(false);
       }
+      setFormSource(source);
       await v.play();
       frameRef.current = { state: "idle", lastRepAt: 0, hipBase: null, kneeWin: [], prevWrist: null, prevT: 0, rep: null, frame: 0 };
       runningRef.current = true;
@@ -1386,7 +1396,15 @@ export default function MomentumCoach() {
               </label>
             </div>
             {formStatus === "running" && (
-              <button style={btn("#45202a", { fontSize: 13, padding: "11px 6px", marginTop: 8, border: `1px solid ${C.them}66` })} onClick={stopForm}>⏹ 停止</button>
+              <div style={{ display: "grid", gridTemplateColumns: formSource === "camera" ? "1fr 1fr" : "1fr", gap: 8, marginTop: 8 }}>
+                {formSource === "camera" && (
+                  <button style={btn("#232d47", { fontSize: 13, padding: "11px 6px" })}
+                    onClick={() => { const next = camFacing === "user" ? "environment" : "user"; setCamFacing(next); startForm("camera", null, next); }}>
+                    🔄 {camFacing === "user" ? "外カメラへ" : "内カメラへ"}切替
+                  </button>
+                )}
+                <button style={btn("#45202a", { fontSize: 13, padding: "11px 6px", border: `1px solid ${C.them}66` })} onClick={stopForm}>⏹ 停止</button>
+              </div>
             )}
             <div style={{ fontSize: 10, color: C.dim, marginTop: 8, lineHeight: 1.7 }}>
               💡 側面から全身(頭〜足首)が映る位置にカメラを置いてください。🔒 映像は端末内で処理され、外部には一切送信されません。
