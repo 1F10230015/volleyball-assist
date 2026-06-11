@@ -372,6 +372,29 @@ function loadFormRef() {
   try { return JSON.parse(localStorage.getItem(FORM_REF_KEY)); } catch { return null; }
 }
 
+// ★お手本リスト(複数管理・ON/OFF・追加削除)
+const FORM_REFS_KEY = "vbmc_form_refs_v1";
+// プリセットは公開データ(石川祐希: 身長192cm・最高到達点351cm等)とエリート選手の
+// 標準バイオメカニクス値からの推定。実映像を「動画ファイルを分析」→「お手本に登録」すれば実測値に置き換えられる。
+const BUILTIN_REFS = [
+  { id: "preset-ishikawa-spike", label: "石川祐希 スパイク", kind: "スパイク", hit: 0.44, elbow: 170, knee: 110, jump: 0.45, n: "推定", builtin: true, enabled: true },
+  { id: "preset-ishikawa-jserve", label: "石川祐希 ジャンプサーブ", kind: "サーブ", hit: 0.46, elbow: 172, knee: 118, jump: 0.40, n: "推定", builtin: true, enabled: true },
+];
+function loadFormRefs() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(FORM_REFS_KEY));
+    if (Array.isArray(stored)) return stored;
+  } catch { /* 初回 */ }
+  // 初回: プリセットを格納し、旧形式の単一お手本があれば移行
+  const refs = BUILTIN_REFS.map(r => ({ ...r }));
+  const old = loadFormRef();
+  if (old && typeof old.hit === "number") {
+    refs.forEach(r => { if (r.kind === (old.kind || "スパイク")) r.enabled = false; });
+    refs.push({ id: `mig-${Date.now()}`, label: "マイお手本(移行)", kind: old.kind || "スパイク", hit: old.hit, elbow: old.elbow, knee: old.knee, jump: old.jump, n: old.n, enabled: true, savedAt: old.savedAt });
+  }
+  return refs;
+}
+
 // ★AIフォームコーチ: 骨格計測の統計からLLMが改善アドバイスを生成
 async function formCoachLLM(summary) {
   const prompt = `あなたはバレーボールのフォーム指導コーチAI。骨格推定AIで計測したオーバーハンドスイングの統計から、具体的な改善アドバイスを作成せよ。
@@ -441,7 +464,7 @@ export default function MomentumCoach() {
   const [liveM, setLiveM] = useState(null);
   const [formKind, setFormKind] = useState("スパイク");
   const [heightCm, setHeightCm] = useState("");
-  const [formRefData, setFormRefData] = useState(loadFormRef);
+  const [formRefs, setFormRefs] = useState(loadFormRefs);
   const [formAdvice, setFormAdvice] = useState(null);
   const [formAdviceLoading, setFormAdviceLoading] = useState(false);
   const videoRef = useRef(null);
@@ -840,13 +863,33 @@ export default function MomentumCoach() {
     n: reps.length,
   } : null;
 
-  const saveFormRef = () => {
+  // ★お手本リスト操作(同じ種目内でONは1つだけ=比較対象)
+  const persistRefs = refs => { try { localStorage.setItem(FORM_REFS_KEY, JSON.stringify(refs)); } catch { /* noop */ } return refs; };
+  const addFormRef = () => {
     if (!repAvg) return;
-    const data = { ...repAvg, kind: formKind, savedAt: new Date().toISOString() };
-    try { localStorage.setItem(FORM_REF_KEY, JSON.stringify(data)); } catch { /* noop */ }
-    setFormRefData(data);
+    const entry = {
+      id: `ref-${Date.now()}`, label: `マイお手本 ${new Date().toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" })}`,
+      kind: formKind, hit: repAvg.hit, elbow: repAvg.elbow, knee: repAvg.knee, jump: repAvg.jump,
+      n: repAvg.n, enabled: true, savedAt: new Date().toISOString(),
+    };
+    setFormRefs(rs => persistRefs([...rs.map(r => r.kind === formKind ? { ...r, enabled: false } : r), entry]));
   };
-  const clearFormRef = () => { try { localStorage.removeItem(FORM_REF_KEY); } catch { /* noop */ } setFormRefData(null); };
+  const toggleFormRef = id => setFormRefs(rs => {
+    const target = rs.find(r => r.id === id);
+    if (!target) return rs;
+    const turningOn = !target.enabled;
+    return persistRefs(rs.map(r =>
+      r.id === id ? { ...r, enabled: turningOn }
+        : turningOn && r.kind === target.kind ? { ...r, enabled: false }
+          : r
+    ));
+  });
+  const deleteFormRef = id => setFormRefs(rs => persistRefs(rs.filter(r => r.id !== id)));
+  const restorePresets = () => setFormRefs(rs =>
+    persistRefs([...rs, ...BUILTIN_REFS.filter(b => !rs.some(r => r.id === b.id)).map(b => ({ ...b, enabled: false }))])
+  );
+  const presetsMissing = BUILTIN_REFS.some(b => !formRefs.some(r => r.id === b.id));
+  const activeRef = formRefs.find(r => r.enabled && r.kind === formKind);
 
   const jumpCmOf = j => heightCm ? ` (約${Math.round(j * +heightCm * 0.85)}cm)` : "";
 
@@ -854,7 +897,7 @@ export default function MomentumCoach() {
     if (!repAvg) return;
     setFormAdviceLoading(true);
     const fmt = a => `打点+${Math.round(a.hit * 100)}% / 肘${Math.round(a.elbow)}° / 膝${Math.round(a.knee)}° / ジャンプ${Math.round(a.jump * 100)}%`;
-    const summary = `種目: ${formKind} / 本数: ${repAvg.n} / 平均スコア${Math.round(repAvg.score)}点 / 計測平均: ${fmt(repAvg)}${formRefData ? ` / お手本(${formRefData.kind}): ${fmt(formRefData)}` : ""}`;
+    const summary = `種目: ${formKind} / 本数: ${repAvg.n} / 平均スコア${Math.round(repAvg.score)}点 / 計測平均: ${fmt(repAvg)}${activeRef ? ` / お手本(${activeRef.label}): ${fmt(activeRef)}` : ""}`;
     const pts = await formCoachLLM(summary);
     setFormAdvice(pts || FALLBACK_FORM_TIPS);
     setFormAdviceLoading(false);
@@ -1446,8 +1489,8 @@ export default function MomentumCoach() {
                 </div>
               ))}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 10 }}>
-                <button style={btn("linear-gradient(160deg, #1f5e40, #174530)", { fontSize: 12, padding: "11px 6px", border: `1px solid ${C.ok}` })} onClick={saveFormRef}>
-                  ⭐ この平均をお手本に登録
+                <button style={btn("linear-gradient(160deg, #1f5e40, #174530)", { fontSize: 12, padding: "11px 6px", border: `1px solid ${C.ok}` })} onClick={addFormRef}>
+                  ⭐ この平均を{formKind}のお手本に登録
                 </button>
                 <button style={btn("#232d47", { fontSize: 12, padding: "11px 6px" })} onClick={() => { setReps([]); setFormAdvice(null); }}>
                   🗑 スイングをクリア
@@ -1456,35 +1499,63 @@ export default function MomentumCoach() {
             </>)}
           </div>
 
-          {formRefData && (
-            <div style={{ ...panel, border: `1px solid ${C.warn}44` }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                <span style={{ fontSize: 12, color: C.warn, fontWeight: 800 }}>⭐ お手本との比較({formRefData.kind}・{formRefData.n}本平均)</span>
-                <button onClick={clearFormRef} style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", fontSize: 11, fontWeight: 700 }}>クリア</button>
-              </div>
-              {!repAvg ? (
-                <div style={{ fontSize: 12, color: C.dim }}>スイングを検出すると、お手本との差分がここに表示されます。</div>
-              ) : (
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, textAlign: "center" }}>
-                  {[
-                    ["打点", (repAvg.hit - formRefData.hit) * 100, "%"],
-                    ["肘", repAvg.elbow - formRefData.elbow, "°"],
-                    ["膝", repAvg.knee - formRefData.knee, "°", true],
-                    ["跳躍", (repAvg.jump - formRefData.jump) * 100, "%"],
-                  ].map(([lbl, d, unit, lowerBetter]) => {
-                    const good = lowerBetter ? d <= 0 : d >= 0;
-                    return (
-                      <div key={lbl} style={{ background: "#0A0F1E", borderRadius: 12, padding: "8px 4px" }}>
-                        <div style={{ fontFamily: "Oswald", fontSize: 16, color: good ? C.ok : C.them }}>{d >= 0 ? "+" : ""}{Math.round(d)}{unit}</div>
-                        <div style={{ fontSize: 9, color: C.dim }}>{lbl}</div>
-                      </div>
-                    );
-                  })}
-                </div>
+          {/* ★お手本リスト(追加・削除・ON/OFF) */}
+          <div style={{ ...panel, border: `1px solid ${C.warn}44` }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+              <span style={{ fontSize: 12, color: C.warn, fontWeight: 800 }}>⭐ お手本リスト</span>
+              {presetsMissing && (
+                <button onClick={restorePresets} style={{ background: "none", border: `1px solid ${C.line}`, color: C.dim, borderRadius: 8, padding: "4px 10px", cursor: "pointer", fontWeight: 700, fontSize: 10 }}>
+                  ↺ プリセットを復元
+                </button>
               )}
-              <div style={{ fontSize: 10, color: C.dim, marginTop: 6 }}>プロや上級者の動画を「📁 動画ファイルを分析」→「⭐ お手本に登録」すると基準になります。</div>
             </div>
-          )}
+            {formRefs.length === 0 ? (
+              <div style={{ fontSize: 12, color: C.dim, padding: "6px 0" }}>お手本がありません。スイングを検出して「お手本に登録」するか、プリセットを復元してください。</div>
+            ) : formRefs.map(r => (
+              <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderTop: `1px solid ${C.line}` }}>
+                <button onClick={() => toggleFormRef(r.id)} title={r.enabled ? "比較に使用中" : "OFF"}
+                  style={{ width: 40, height: 22, borderRadius: 11, border: "none", cursor: "pointer", position: "relative", background: r.enabled ? C.ok : "#232d47", flexShrink: 0, padding: 0 }}>
+                  <span style={{ position: "absolute", top: 2, left: r.enabled ? 20 : 2, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left .15s" }} />
+                </button>
+                <span style={{ fontSize: 9, fontWeight: 900, padding: "3px 8px", borderRadius: 8, flexShrink: 0, background: r.kind === "スパイク" ? `${C.us}22` : `${C.warn}22`, color: r.kind === "スパイク" ? C.us : C.warn }}>
+                  {r.kind === "スパイク" ? "💥" : "🎯"} {r.kind}
+                </span>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span style={{ fontWeight: 800, fontSize: 12 }}>{r.label}{r.builtin && <span style={{ fontSize: 9, color: C.dim, fontWeight: 700 }}>(推定値)</span>}</span><br />
+                  <span style={{ color: C.dim, fontSize: 10 }}>打点+{Math.round(r.hit * 100)}% / 肘{Math.round(r.elbow)}° / 膝{Math.round(r.knee)}° / 跳{Math.round(r.jump * 100)}%</span>
+                </span>
+                <button onClick={() => deleteFormRef(r.id)} style={{ background: "none", border: "none", color: C.them, cursor: "pointer", fontSize: 13, flexShrink: 0 }}>🗑</button>
+              </div>
+            ))}
+            <div style={{ fontSize: 10, color: C.dim, marginTop: 6, lineHeight: 1.7 }}>
+              ONのお手本が現在の種目と一致すると下に比較が出ます(同じ種目でONは1つ)。プロの動画を「📁 動画ファイルを分析」→「⭐ お手本に登録」で実測のお手本を追加できます。プリセットは公開データからの推定値です。
+            </div>
+            {activeRef && (
+              <div style={{ marginTop: 10, background: "#0A0F1E", borderRadius: 14, padding: 12 }}>
+                <div style={{ fontSize: 11, color: C.warn, fontWeight: 800, marginBottom: 8 }}>📊 「{activeRef.label}」との比較</div>
+                {!repAvg ? (
+                  <div style={{ fontSize: 11, color: C.dim }}>スイングを検出すると差分が表示されます。</div>
+                ) : (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, textAlign: "center" }}>
+                    {[
+                      ["打点", (repAvg.hit - activeRef.hit) * 100, "%"],
+                      ["肘", repAvg.elbow - activeRef.elbow, "°"],
+                      ["膝", repAvg.knee - activeRef.knee, "°", true],
+                      ["跳躍", (repAvg.jump - activeRef.jump) * 100, "%"],
+                    ].map(([lbl, d, unit, lowerBetter]) => {
+                      const good = lowerBetter ? d <= 0 : d >= 0;
+                      return (
+                        <div key={lbl} style={{ background: "#161E33", borderRadius: 12, padding: "8px 4px" }}>
+                          <div style={{ fontFamily: "Oswald", fontSize: 16, color: good ? C.ok : C.them }}>{d >= 0 ? "+" : ""}{Math.round(d)}{unit}</div>
+                          <div style={{ fontSize: 9, color: C.dim }}>{lbl}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
 
           <div style={{ ...panel, border: `1px solid ${C.us}44` }}>
             <div style={{ fontSize: 12, color: C.us, fontWeight: 800, marginBottom: 10 }}>🤖 AIフォームコーチ</div>
