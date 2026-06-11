@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Momentum Coach AI — preview</title>
+<script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
+<style>body{margin:0;background:#0A0F1E}</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="module">
+  const REACT_URL = "https://esm.sh/react@18.3.1";
+  const DOM_URL = "https://esm.sh/react-dom@18.3.1/client";
+  try {
+    let src = await (await fetch("./momentum-coach.jsx")).text();
+    src = src.replace('from "react"', `from "${REACT_URL}"`);
+    const out = Babel.transform(src, { presets: [["react", { runtime: "automatic", importSource: REACT_URL }]], filename: "momentum-coach.jsx" }).code;
+    const mod = await import(URL.createObjectURL(new Blob([out], { type: "text/javascript" })));
+    const React = await import(REACT_URL);
+    const { createRoot } = await import(DOM_URL);
+    createRoot(document.getElementById("root")).render(React.createElement(mod.default));
+    console.log("PREVIEW_OK");
+  } catch (err) {
+    console.error("PREVIEW_FAIL", err);
+    document.getElementById("root").innerHTML = `<pre style="color:#ff8c84;padding:20px;white-space:pre-wrap">${String(err)}</pre>`;
+  }
+</script>
+</body>
+</html>
