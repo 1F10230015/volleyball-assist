@@ -395,13 +395,25 @@ const FORM_REFS_KEY = "vbmc_form_refs_v1";
 // プリセットは公開データ(石川祐希: 身長192cm・最高到達点351cm等)とエリート選手の
 // 標準バイオメカニクス値からの推定。実映像を「動画ファイルを分析」→「お手本に登録」すれば実測値に置き換えられる。
 const BUILTIN_REFS = [
-  { id: "preset-ishikawa-spike", label: "石川祐希 スパイク", kind: "スパイク", hit: 0.44, elbow: 170, knee: 110, jump: 0.45, n: "推定", builtin: true, enabled: true },
+  // ★実測: 石川祐希のスパイク映像(左斜め後ろから撮影)を本アプリの3D骨格解析にかけた計測値。
+  //   斜め後ろアングルのため打点・肘伸展はやや低めに出ている点に留意(振り速度・引き・膝・跳躍は良好に取れている)
+  { id: "preset-ishikawa-spike-real", label: "石川祐希 スパイク(実測)", kind: "スパイク", hit: 0.261, elbow: 131, knee: 103, jump: 0.491, n: 1, builtin: true, enabled: true },
+  { id: "preset-ishikawa-spike", label: "石川祐希 スパイク", kind: "スパイク", hit: 0.44, elbow: 170, knee: 110, jump: 0.45, n: "推定", builtin: true, enabled: false },
   { id: "preset-ishikawa-jserve", label: "石川祐希 ジャンプサーブ", kind: "サーブ", hit: 0.46, elbow: 172, knee: 118, jump: 0.40, n: "推定", builtin: true, enabled: true },
 ];
 function loadFormRefs() {
   try {
     const stored = JSON.parse(localStorage.getItem(FORM_REFS_KEY));
-    if (Array.isArray(stored)) return stored;
+    if (Array.isArray(stored)) {
+      // アプリ更新で増えた組み込みプリセットを既存端末にも自動追加(OFF状態・比較対象は変えない)
+      const missing = BUILTIN_REFS.filter(b => !stored.some(r => r.id === b.id)).map(b => ({ ...b, enabled: false }));
+      if (missing.length) {
+        const merged = [...stored, ...missing];
+        try { localStorage.setItem(FORM_REFS_KEY, JSON.stringify(merged)); } catch { /* noop */ }
+        return merged;
+      }
+      return stored;
+    }
   } catch { /* 初回 */ }
   // 初回: プリセットを格納し、旧形式の単一お手本があれば移行
   const refs = BUILTIN_REFS.map(r => ({ ...r }));
@@ -824,45 +836,59 @@ export default function MomentumCoach() {
       w = fs.smoothW;
     }
 
-    // ★可視性ゲート: 鼻・手首・膝・足首が映っていないフレームは計測しない(描画のみ)
-    const minVis = Math.min(...KEY_VIS_POINTS.map(i => lm[i].visibility ?? 1));
-    const quality = minVis > 0.35 ? "good" : "partial";
+    // ★可視性ゲート(上半身/下半身を分離):
+    // スパイクのインパクト瞬間は脚の検出信頼度が落ちやすい(ブレ・ネット遮蔽)。
+    // 一律に計測を止めるとスイングを取り逃すため、スイング検出は鼻+手首が見えていれば継続し、
+    // 脚が見えない間だけ膝・ジャンプ・身長スケールを直前の有効値で代用する。
+    const visOf = i => lm[i].visibility ?? 1;
+    const upperOk = Math.min(visOf(0), Math.max(visOf(15), visOf(16))) > 0.35;
+    const lowerOk = Math.min(visOf(25), visOf(26), visOf(27), visOf(28)) > 0.35;
+    const quality = upperOk && lowerOk ? "good" : upperOk ? "upper" : "partial";
     if (fs.lastQ !== quality) { fs.lastQ = quality; setTrackQuality(quality); }
-    if (quality === "partial") { fs.prevWrist = null; return pts; }
+    if (!upperOk) { fs.prevWrist = null; return pts; }
 
     const noseY = pts[0].y;
-    const ankleY = (pts[27].y + pts[28].y) / 2;
-    const bodyH = Math.max(0.1, ankleY - noseY); // 鼻〜足首の正規化身長(2D・上下方向の指標用)
+    if (lowerOk) {
+      const ankleY = (pts[27].y + pts[28].y) / 2;
+      fs.bodyH2d = Math.max(0.1, ankleY - noseY); // 鼻〜足首の正規化身長(2D・上下方向の指標用)
+    }
+    const bodyH = fs.bodyH2d ?? Math.max(0.1, (pts[27].y + pts[28].y) / 2 - noseY);
     const hipY = (pts[23].y + pts[24].y) / 2;
     // 角度・速度は3D座標を優先(真横以外からでも潰れない)。3Dが無い場合のみ2Dにフォールバック
     const A = w ?? pts;
-    const knee = Math.min(angleDeg(A[23], A[25], A[27]), angleDeg(A[24], A[26], A[28]));
+    const kneeNow = Math.min(angleDeg(A[23], A[25], A[27]), angleDeg(A[24], A[26], A[28]));
+    const knee = lowerOk ? kneeNow : (fs.kneeWin.length ? fs.kneeWin[fs.kneeWin.length - 1].knee : kneeNow);
     const rightUp = pts[16].y < pts[15].y;
     const wrist = rightUp ? pts[16] : pts[15];
     const elbow = rightUp ? angleDeg(A[12], A[14], A[16]) : angleDeg(A[11], A[13], A[15]);
     const wristH = (noseY - wrist.y) / bodyH; // 手首が鼻よりどれだけ上か(身長比)
     // 振り速度: 3D移動距離を3D身長(鼻〜足首中点)で正規化 → 単位は従来どおり「身長比/秒」
     const wristA = rightUp ? A[16] : A[15];
-    const scale = w ? Math.max(0.3, dist3(w[0], { x: (w[27].x + w[28].x) / 2, y: (w[27].y + w[28].y) / 2, z: (w[27].z + w[28].z) / 2 })) : bodyH;
+    if (w && lowerOk) fs.scaleW = Math.max(0.3, dist3(w[0], { x: (w[27].x + w[28].x) / 2, y: (w[27].y + w[28].y) / 2, z: (w[27].z + w[28].z) / 2 }));
+    const scale = w ? (fs.scaleW ?? 1.5) : bodyH;
     let speed = 0;
     if (fs.prevWrist && tMs > fs.prevT) speed = dist3(wristA, fs.prevWrist) / scale / ((tMs - fs.prevT) / 1000);
     fs.prevWrist = { x: wristA.x, y: wristA.y, z: wristA.z }; fs.prevT = tMs;
-    // 直近2秒の最小膝角度(助走の沈み込み)
-    fs.kneeWin.push({ t: tMs, knee });
-    while (fs.kneeWin.length && tMs - fs.kneeWin[0].t > 2000) fs.kneeWin.shift();
+    // 直近2秒の最小膝角度(助走の沈み込み)。脚が見えているフレームのみ採用
+    if (lowerOk) {
+      fs.kneeWin.push({ t: tMs, knee: kneeNow });
+      while (fs.kneeWin.length && tMs - fs.kneeWin[0].t > 2000) fs.kneeWin.shift();
+    }
     // 直近1.2秒の肘角度(テイクバック=振り始め前に肘をどこまで曲げて引けたか)
     fs.elbowWin.push({ t: tMs, elbow });
     while (fs.elbowWin.length && tMs - fs.elbowWin[0].t > 1200) fs.elbowWin.shift();
-    // 腰の基準線(非スイング時のみ更新)→ ジャンプ量
-    if (fs.hipBase === null) fs.hipBase = hipY;
-    if (fs.state === "idle") fs.hipBase = fs.hipBase * 0.95 + hipY * 0.05;
-    const jump = Math.max(0, (fs.hipBase - hipY) / bodyH);
+    // 腰の基準線(非スイング時のみ更新)→ ジャンプ量。脚が見えないフレームは更新しない
+    if (lowerOk) {
+      if (fs.hipBase === null) fs.hipBase = hipY;
+      if (fs.state === "idle") fs.hipBase = fs.hipBase * 0.95 + hipY * 0.05;
+    }
+    const jump = lowerOk && fs.hipBase !== null ? Math.max(0, (fs.hipBase - hipY) / bodyH) : 0;
 
     if (fs.state === "idle" && wristH > 0.05 && tMs - fs.lastRepAt > 800) {
       fs.state = "swing";
       fs.rep = {
         startT: tMs, maxWristH: wristH, elbowAtMax: elbow, maxSpeed: speed, maxJump: jump,
-        minKnee: Math.min(...fs.kneeWin.map(k => k.knee)),
+        minKnee: fs.kneeWin.length ? Math.min(...fs.kneeWin.map(k => k.knee)) : 150,
         minElbow: Math.min(...fs.elbowWin.map(e => e.elbow)), // テイクバックは振り始め前の窓から取る
       };
     } else if (fs.state === "swing") {
@@ -909,7 +935,7 @@ export default function MomentumCoach() {
       await v.play();
       // ★動画ファイルはスロー再生で解析(1コマあたりの推論時間を確保して取りこぼしを防ぐ)
       v.playbackRate = source === "file" ? 0.6 : 1.0;
-      frameRef.current = { state: "idle", lastRepAt: -1e9, hipBase: null, kneeWin: [], elbowWin: [], prevWrist: null, prevT: 0, rep: null, frame: 0, smooth: null, smoothW: null, lastQ: null, fps: 0, lastT: null };
+      frameRef.current = { state: "idle", lastRepAt: -1e9, hipBase: null, kneeWin: [], elbowWin: [], prevWrist: null, prevT: 0, rep: null, frame: 0, smooth: null, smoothW: null, lastQ: null, fps: 0, lastT: null, bodyH2d: null, scaleW: null };
       runningRef.current = true;
       setTrackQuality(null);
       setFormStatus("running");
@@ -1531,7 +1557,7 @@ export default function MomentumCoach() {
               </span>
               {formStatus === "running" && trackQuality && (
                 <span style={{ position: "absolute", top: 8, right: 8, fontSize: 10, fontWeight: 900, padding: "4px 10px", borderRadius: 8, background: "rgba(10,15,30,.8)", color: trackQuality === "good" ? C.ok : C.warn }}>
-                  {trackQuality === "good" ? "🟢 全身検出中" : "🟠 全身が映っていません"}
+                  {trackQuality === "good" ? "🟢 全身検出中" : trackQuality === "upper" ? "🟡 上半身のみ検出中" : "🟠 体が映っていません"}
                 </span>
               )}
               {formStatus === "idle" && !formErr && (
@@ -1632,7 +1658,7 @@ export default function MomentumCoach() {
                   {r.kind === "スパイク" ? "💥" : "🎯"} {r.kind}
                 </span>
                 <span style={{ flex: 1, minWidth: 0 }}>
-                  <span style={{ fontWeight: 800, fontSize: 12 }}>{r.label}{r.builtin && <span style={{ fontSize: 9, color: C.dim, fontWeight: 700 }}>(推定値)</span>}</span><br />
+                  <span style={{ fontWeight: 800, fontSize: 12 }}>{r.label}{r.n === "推定" && <span style={{ fontSize: 9, color: C.dim, fontWeight: 700 }}>(推定値)</span>}</span><br />
                   <span style={{ color: C.dim, fontSize: 10 }}>打点+{Math.round(r.hit * 100)}% / 肘{Math.round(r.elbow)}° / 膝{Math.round(r.knee)}° / 跳{Math.round(r.jump * 100)}%</span>
                 </span>
                 <button onClick={() => deleteFormRef(r.id)} style={{ background: "none", border: "none", color: C.them, cursor: "pointer", fontSize: 13, flexShrink: 0 }}>🗑</button>
