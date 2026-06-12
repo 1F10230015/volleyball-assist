@@ -56,8 +56,8 @@ function momentumSeries(log, toFactor = 0.45) {
   let m = 0; const series = [0];
   for (const r of log) {
     if (r.type === "timeout") m *= toFactor;
-    else m = ALPHA * m + r.w * r.e;
-    series.push(m);
+    else if (r.type === "rally") m = ALPHA * m + r.w * r.e;
+    series.push(m); // 交代などその他のイベントはモメンタム不変
   }
   return series;
 }
@@ -140,6 +140,54 @@ function assessThreat(log, us, them, labelOf, toFactor = 0.45, target = SET_TARG
   return { score: Math.max(0, score), factors, streak, m, dM, lead };
 }
 
+// ====== Claude API共通呼び出し ======
+// APIキー(AI学習センターで設定、localStorage保存)がある場合のみ実際にLLMを呼ぶ。
+// 未設定・失敗時はnullを返し、各機能はルールベース生成にフォールバックする。
+const API_KEY_KEY = "vbmc_api_key";
+async function callClaude(prompt, apiKey) {
+  if (!apiKey) return null;
+  try {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true",
+      },
+      body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 1000, messages: [{ role: "user", content: prompt }] }),
+    });
+    const data = await res.json();
+    const text = (data.content?.map(c => c.text || "").join("") || "").replace(/```json|```/g, "").trim();
+    return JSON.parse(text);
+  } catch { return null; }
+}
+
+// ====== ★状況対応アドバイス生成(ルールベース) ======
+// API未接続でも「その時の失点パターン・スコア状況」から毎回組み立てる。固定文の使い回しをしない。
+function buildBenchAdvice(recent, labelOf, opts = {}) {
+  const losses = recent.filter(r => r.e === -1).slice(-5);
+  const byPattern = {};
+  losses.forEach(r => { const k = `${r.play}|${tKey(r.target)}`; byPattern[k] = (byPattern[k] || 0) + 1; });
+  const top = Object.entries(byPattern).sort((a, b) => b[1] - a[1])[0];
+  let reason = "連続失点で流れが相手にある";
+  let core = "サーブカットから丁寧に。まず3本で確実に相手コートへ返すこと。";
+  if (top) {
+    const [k, n] = top;
+    const play = k.split("|")[0];
+    const target = losses.find(r => `${r.play}|${tKey(r.target)}` === k)?.target;
+    const name = target ? labelOf(target) : "相手エース";
+    if (play === "被スパイク") { reason = `${name}に${n}本決められている`; core = `ブロックは${name}に的を絞ること。レシーブはクロス側に1人固定し、フェイントケアを1歩前へ。`; }
+    else if (play === "被サーブ") { reason = `サーブで${n}本崩されている`; core = `サーブカットの担当範囲を全員で声出し確認。1歩下がって構え、強打は上に当てて高く上げるだけでいい。`; }
+    else if (play === "被ブロック") { reason = `スパイクを${n}本止められている`; core = `同じコースに打ちすぎている。次はブロックの外を抜くか、軟打・プッシュで裏を狙うこと。`; }
+    else if (play === "自滅エラー") { reason = `自滅エラーが${n}本続いている`; core = `難しいプレーは全部封印。トスは高く確実に、迷ったら相手コート奥に深く返すだけでいい。`; }
+  }
+  const tail = opts.deuce ? "デュースは1本ずつ。サーブとカットの確実性だけを考えよう。"
+    : opts.setPointThem ? "相手のセットポイントだが1本返せば流れは戻る。思い切っていこう。"
+      : opts.lead <= -4 ? `${-opts.lead}点差はまだ1本ずつで届く距離。焦らず積み上げよう。` : "";
+  return { reason, advice: (core + tail).slice(0, 120) };
+}
+
 // ====== 第2段階: LLM最終判定 ======
 async function judgeWithLLM(ctx) {
   const ralliesTxt = ctx.recent.map(r => `${r.e === 1 ? "得点" : "失点"}(${r.play}/${ctx.labelOf(r.target)})`).join("→");
@@ -151,26 +199,15 @@ ${ctx.learnNote ? `学習知見(プロ・過去試合の蓄積データ統計。
 adviceでは選手名・ポジションを使って具体的に指示すること。
 次のJSONのみ出力(前置き・フェンス禁止):
 {"alert": true/false, "urgency": 1-5, "reason": "40字以内", "advice": "指示2文90字以内(falseでも声かけ案)"}`;
-  try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, messages: [{ role: "user", content: prompt }] }),
-    });
-    const data = await res.json();
-    const text = (data.content?.map(c => c.text || "").join("") || "").replace(/```json|```/g, "").trim();
-    const parsed = JSON.parse(text);
-    return typeof parsed.alert === "boolean" ? parsed : null;
-  } catch { return null; }
+  const parsed = await callClaude(prompt, ctx.apiKey);
+  return parsed && typeof parsed.alert === "boolean" ? parsed : null;
 }
 
-function localVerdict(threat) {
+// ルールベース判定: アラート可否は警戒度、文面はその時の失点パターンから組み立てる
+function localVerdict(threat, recent, labelOf, opts) {
   const alert = threat.score >= LOCAL_ALERT_THRESHOLD;
-  return {
-    alert, urgency: alert ? 4 : 2,
-    reason: alert ? "警戒度が高く流れの分断が必要" : "まだ流れは戻せる範囲",
-    advice: alert ? "難しいプレーは封印し、まず3本で確実に返すこと。" : "次のサーブカットを丁寧に。声を出して位置取りを確認。",
-    offline: true,
-  };
+  const { reason, advice } = buildBenchAdvice(recent, labelOf, opts);
+  return { alert, urgency: alert ? 4 : 2, reason, advice, offline: true };
 }
 
 function next3Outcome(log, fromIndex) {
@@ -206,20 +243,12 @@ function calibrateWeights(logs) {
   return out;
 }
 
-async function practiceMenu(stats) {
+async function practiceMenu(stats, apiKey) {
   const prompt = `バレーボール初中級チームのコーチAI。今日の試合の弱点データから次回練習メニューを提案せよ。
 弱点: ${stats}
 次のJSON配列のみ出力(フェンス禁止): [{"title":"メニュー名","desc":"やり方40字以内","mins":分数}] 3件`;
-  try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, messages: [{ role: "user", content: prompt }] }),
-    });
-    const data = await res.json();
-    const text = (data.content?.map(c => c.text || "").join("") || "").replace(/```json|```/g, "").trim();
-    const parsed = JSON.parse(text);
-    return Array.isArray(parsed) ? parsed.slice(0, 3) : null;
-  } catch { return null; }
+  const parsed = await callClaude(prompt, apiKey);
+  return Array.isArray(parsed) ? parsed.slice(0, 3) : null;
 }
 const FALLBACK_MENU = [
   { title: "3本確実リターン", desc: "乱打で「3本で返す」だけを20本連続成功するまで", mins: 20 },
@@ -228,21 +257,13 @@ const FALLBACK_MENU = [
 ];
 
 // ====== ★AI実況: 試合ストーリー生成 ======
-async function matchStory(summary) {
+async function matchStory(summary, apiKey) {
   const prompt = `あなたは熱血スポーツ実況アナウンサー。アマチュアバレーの試合データから、チームが盛り上がる短い実況風ハイライト記事を書け。
 データ: ${summary}
 選手名を使い、ターニングポイントを劇的に描写すること。
 次のJSONのみ出力(フェンス禁止): {"headline":"見出し15字以内","story":"本文200字以内"}`;
-  try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, messages: [{ role: "user", content: prompt }] }),
-    });
-    const data = await res.json();
-    const text = (data.content?.map(c => c.text || "").join("") || "").replace(/```json|```/g, "").trim();
-    const parsed = JSON.parse(text);
-    return parsed.story ? parsed : null;
-  } catch { return null; }
+  const parsed = await callClaude(prompt, apiKey);
+  return parsed?.story ? parsed : null;
 }
 
 // ====== ★AI学習エンジン: プロ・春高・自チームの試合記録から学習 ======
@@ -271,11 +292,16 @@ function computeLearnedParams(entries) {
     pServe = 1 - pReceive;
   }
 
-  // タイムアウト効果 → モメンタム分断係数(立て直し率が高いほど強く分断)
-  const outs = logs.flatMap(log =>
-    log.map((r, i) => r.type === "timeout" ? i : -1).filter(i => i >= 0).map(i => next3Outcome(log, i + 1))
+  // タイムアウト効果(チーム別) → 自チームTOの立て直し率からモメンタム分断係数を学習
+  // ※過去データでteam未記録のTOは自チーム扱い(旧バージョンは自チームTOのみ記録していたため)
+  const eventOuts = (type, team) => logs.flatMap(log =>
+    log.map((r, i) => r.type === type && (team === null || (r.team ?? "us") === team) ? i : -1)
+      .filter(i => i >= 0).map(i => next3Outcome(log, i + 1))
   ).filter(Boolean);
-  const toRate = outs.length >= 3 ? outs.reduce((s, o) => s + o.won, 0) / outs.reduce((s, o) => s + o.n, 0) : null;
+  const rate3 = arr => arr.length >= 3 ? arr.reduce((s, o) => s + o.won, 0) / arr.reduce((s, o) => s + o.n, 0) : null;
+  const toRate = rate3(eventOuts("timeout", "us"));
+  const toRateOpp = rate3(eventOuts("timeout", "them")); // 相手TO後にこちらが得点を維持できているか
+  const subRate = rate3(eventOuts("sub", "us"));         // 自チームの交代直後3本の得点率
   const toFactor = toRate === null ? 0.45 : Math.min(0.6, Math.max(0.25, 0.6 - 0.3 * toRate));
 
   // W_t 重みの自動補正(失点ラッシュに偏るプレーを重く)
@@ -302,11 +328,13 @@ function computeLearnedParams(entries) {
   const note = [
     `${entries.length}試合${rallies.length}ラリーから学習`,
     pServe !== null ? `サーブ時得点率${Math.round(pServe * 100)}%/レシーブ時${Math.round(pReceive * 100)}%` : null,
-    toRate !== null ? `TO後3本の立て直し率${Math.round(toRate * 100)}%` : null,
+    toRate !== null ? `自TO後3本の立て直し率${Math.round(toRate * 100)}%` : null,
+    toRateOpp !== null ? `相手TO後の得点維持率${Math.round(toRateOpp * 100)}%` : null,
+    subRate !== null ? `交代直後3本の得点率${Math.round(subRate * 100)}%` : null,
     calib.length ? `連続失点の引き金: ${calib.map(c => c.play).join("・")}` : null,
   ].filter(Boolean).join(" / ");
 
-  return { matches: entries.length, ralliesN: rallies.length, pServe, pReceive, toRate, toFactor, weights, calib, byServer, byServerN, lossPlays, note };
+  return { matches: entries.length, ralliesN: rallies.length, pServe, pReceive, toRate, toRateOpp, subRate, toFactor, weights, calib, byServer, byServerN, lossPlays, note };
 }
 
 // ★AIローテ最適化: 学習したサーブ順別得失点差から、最初のサーバーを誰にすべきか探索
@@ -326,21 +354,13 @@ function bestServeOrder(lineupUs, byServer) {
 }
 
 // ★AI戦術レポート: 蓄積学習データの統計から次戦に向けた戦術知見を生成
-async function scoutReport(summary) {
+async function scoutReport(summary, apiKey) {
   const prompt = `あなたはバレーボールのデータアナリスト。チームが蓄積した試合学習データ(プロ・春高の観戦記録や自チームの試合)の統計サマリーから、次の試合に向けた戦術レポートを作成せよ。
 データ: ${summary}
 具体的で実行可能な助言にすること。精神論は禁止。
 次のJSONのみ出力(フェンス禁止): {"title":"レポート題15字以内","points":["戦術ポイント60字以内","…"]} pointsは4件`;
-  try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, messages: [{ role: "user", content: prompt }] }),
-    });
-    const data = await res.json();
-    const text = (data.content?.map(c => c.text || "").join("") || "").replace(/```json|```/g, "").trim();
-    const parsed = JSON.parse(text);
-    return Array.isArray(parsed.points) ? parsed : null;
-  } catch { return null; }
+  const parsed = await callClaude(prompt, apiKey);
+  return parsed && Array.isArray(parsed.points) ? parsed : null;
 }
 
 // ====== ★AIフォームラボ: ブラウザ内リアルタイム骨格解析(MediaPipe Pose) ======
@@ -395,9 +415,11 @@ const FORM_REFS_KEY = "vbmc_form_refs_v1";
 // プリセットは公開データ(石川祐希: 身長192cm・最高到達点351cm等)とエリート選手の
 // 標準バイオメカニクス値からの推定。実映像を「動画ファイルを分析」→「お手本に登録」すれば実測値に置き換えられる。
 const BUILTIN_REFS = [
-  // ★実測: 石川祐希のスパイク映像(左斜め後ろから撮影)を本アプリの3D骨格解析にかけた計測値。
-  //   斜め後ろアングルのため打点・肘伸展はやや低めに出ている点に留意(振り速度・引き・膝・跳躍は良好に取れている)
-  { id: "preset-ishikawa-spike-real", label: "石川祐希 スパイク(実測)", kind: "スパイク", hit: 0.261, elbow: 131, knee: 103, jump: 0.491, n: 1, builtin: true, enabled: true },
+  // ★実測: 石川祐希のスパイク映像(左斜め後ろ)を、タップ選択で本人に固定して3D骨格解析した計測値。
+  //   (旧値はブロッカーへの乗り移りが疑われたため再計測済み)
+  //   斜め後ろアングル+サンプリングの都合で打点・肘伸展は実際よりやや低めに出ている点に留意。
+  //   引き肘82°・膝97°・跳躍59%(腰上昇約1m)は良好に取れている。
+  { id: "preset-ishikawa-spike-real", label: "石川祐希 スパイク(実測)", kind: "スパイク", hit: 0.223, elbow: 112, knee: 97, jump: 0.595, n: 1, builtin: true, enabled: true },
   { id: "preset-ishikawa-spike", label: "石川祐希 スパイク", kind: "スパイク", hit: 0.44, elbow: 170, knee: 110, jump: 0.45, n: "推定", builtin: true, enabled: false },
   { id: "preset-ishikawa-jserve", label: "石川祐希 ジャンプサーブ", kind: "サーブ", hit: 0.46, elbow: 172, knee: 118, jump: 0.40, n: "推定", builtin: true, enabled: true },
 ];
@@ -405,14 +427,16 @@ function loadFormRefs() {
   try {
     const stored = JSON.parse(localStorage.getItem(FORM_REFS_KEY));
     if (Array.isArray(stored)) {
-      // アプリ更新で増えた組み込みプリセットを既存端末にも自動追加(OFF状態・比較対象は変えない)
+      // 組み込みプリセットの計測値をコードの最新値に同期(ON/OFF状態は端末側を維持)し、
+      // アプリ更新で増えたプリセットはOFF状態で自動追加(比較対象は勝手に変えない)
+      const synced = stored.map(r => {
+        const b = BUILTIN_REFS.find(x => x.id === r.id);
+        return b ? { ...b, enabled: r.enabled } : r;
+      });
       const missing = BUILTIN_REFS.filter(b => !stored.some(r => r.id === b.id)).map(b => ({ ...b, enabled: false }));
-      if (missing.length) {
-        const merged = [...stored, ...missing];
-        try { localStorage.setItem(FORM_REFS_KEY, JSON.stringify(merged)); } catch { /* noop */ }
-        return merged;
-      }
-      return stored;
+      const merged = [...synced, ...missing];
+      try { localStorage.setItem(FORM_REFS_KEY, JSON.stringify(merged)); } catch { /* noop */ }
+      return merged;
     }
   } catch { /* 初回 */ }
   // 初回: プリセットを格納し、旧形式の単一お手本があれば移行
@@ -426,28 +450,30 @@ function loadFormRefs() {
 }
 
 // ★AIフォームコーチ: 骨格計測の統計からLLMが改善アドバイスを生成
-async function formCoachLLM(summary) {
+async function formCoachLLM(summary, apiKey) {
   const prompt = `あなたはバレーボールのフォーム指導コーチAI。骨格推定AIで計測したオーバーハンドスイングの統計から、具体的な改善アドバイスを作成せよ。
 計測値の意味: 打点=手首が鼻より上に出た高さ(身長比%、高いほど良い) / 肘角度=インパクト時の伸展(180°が完全伸展) / テイクバック肘=振り始め前にどこまで肘を曲げて引けたか(90°以下が理想、大きいと棒振り) / 振り速度=手首の最高速度(身長比/秒、6.0以上が理想) / 膝角度=助走時の最小値(小さいほど深く沈む) / ジャンプ=腰の上昇量(身長比%)
 データ: ${summary}
 体の使い方を具体的に指示すること。精神論は禁止。
 次のJSONのみ出力(フェンス禁止): {"points":["アドバイス60字以内","…"]} 3件`;
-  try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, messages: [{ role: "user", content: prompt }] }),
-    });
-    const data = await res.json();
-    const text = (data.content?.map(c => c.text || "").join("") || "").replace(/```json|```/g, "").trim();
-    const parsed = JSON.parse(text);
-    return Array.isArray(parsed.points) ? parsed.points : null;
-  } catch { return null; }
+  const parsed = await callClaude(prompt, apiKey);
+  return parsed && Array.isArray(parsed.points) ? parsed.points : null;
 }
-const FALLBACK_FORM_TIPS = [
-  "打点が低めです。トスを上げたら最高到達点で「待つ」のではなく、最高点でミートする意識でスイング開始を半テンポ遅らせましょう。",
-  "肘が曲がったままミートしています。耳の横から肘を先行させ、最後に前腕を鞭のように振り出すと自然に伸びます。",
-  "沈み込みが浅いとジャンプに力が乗りません。助走最後の2歩を「右・左ッ」と大きく踏み込み、膝を120°程度まで曲げてから跳びましょう。",
-];
+
+// ★フォーム助言のルールベース生成: 採点と同じ基準で「弱い項目」を特定し、
+// その時の実測値を入れて組み立てる(API未接続でも毎回その人のデータに合った内容になる)
+function buildFormTips(avg) {
+  const c01 = v => Math.min(1, Math.max(0, v));
+  const items = [
+    { s: c01((avg.speed - 1.5) / 4.5), tip: `振り速度が平均${avg.speed.toFixed(1)}身長/秒(目標6.0)。肩→肘→手首の順で鞭のように加速させ、最後に手首を走らせて振り切ろう。` },
+    { s: c01((avg.hit - 0.15) / 0.23), tip: `打点が鼻上+${Math.round(avg.hit * 100)}%(目標+38%)。トスの最高点ではなく「自分の最高打点」で叩けるよう、ジャンプの頂点までスイングを我慢しよう。` },
+    { s: c01((150 - avg.cock) / 60), tip: `テイクバックの肘が${Math.round(avg.cock)}°止まり(目標90°以下)。耳の横まで肘を引き、弓を引くように胸を張ってから振り出そう。` },
+    { s: c01((avg.elbow - 120) / 50), tip: `インパクト時の肘が${Math.round(avg.elbow)}°(目標170°)。当たる瞬間に肘を伸ばし切り、ボールの上を叩いて最高点でミートしよう。` },
+    { s: c01((150 - avg.knee) / 40), tip: `助走の沈み込みが膝${Math.round(avg.knee)}°(目標110°)。最後の2歩を「右・左ッ」と大きく踏み込み、深く沈んでから跳ぼう。` },
+    { s: c01((avg.jump - 0.03) / 0.22), tip: `ジャンプが身長比+${Math.round(avg.jump * 100)}%。両腕を後ろから前上へ強く振り上げ、助走の勢いを縦に変換しよう。` },
+  ];
+  return items.sort((a, b) => a.s - b.s).slice(0, 3).map(i => i.tip);
+}
 
 // ====== ★音声コーチ(Web Speech API) ======
 function speak(text) {
@@ -479,6 +505,8 @@ export default function MomentumCoach() {
   const [matchKind, setMatchKind] = useState("match"); // "match"=試合 / "scout"=観戦学習
   const [learnEntries, setLearnEntries] = useState(loadLearnEntries);
   const [learnApply, setLearnApply] = useState(true);
+  const [apiKey, setApiKey] = useState(() => { try { return localStorage.getItem(API_KEY_KEY) || ""; } catch { return ""; } });
+  const [subbing, setSubbing] = useState(null); // 選手交代フロー {team?, out?, name?}
   const [selSlot, setSelSlot] = useState(null);
   const [editNames, setEditNames] = useState({ us: false, them: false });
   const [scoutRep, setScoutRep] = useState(null);
@@ -491,8 +519,10 @@ export default function MomentumCoach() {
   const [camFacing, setCamFacing] = useState("environment"); // スマホは外カメラをデフォルトに
   const [formSource, setFormSource] = useState(null); // "camera" | "file"
   const [formModel, setFormModel] = useState("lite"); // lite | full | heavy(カメラのリアルタイムはfps優先でlite)
-  const [trackQuality, setTrackQuality] = useState(null); // "good" | "partial"
+  const [trackQuality, setTrackQuality] = useState(null); // "good" | "upper" | "partial"
+  const [poseCount, setPoseCount] = useState(0); // 検出中の人数
   const modelRef = useRef(null); // 現在ロード済みのモデル名
+  const tapRef = useRef(null); // 映像タップ位置(計測対象の切替指示)
   const [reps, setReps] = useState([]);
   const [liveM, setLiveM] = useState(null);
   const [formKind, setFormKind] = useState("スパイク");
@@ -594,9 +624,9 @@ export default function MomentumCoach() {
     if (judgedAt.current === log.length) return;
     judgedAt.current = log.length;
     setJudging(true);
-    const ctx = { us, them, timeoutsLeft, m, dM: threat.dM, streak: threat.streak, score: threat.score, factors: threat.factors, recent: rallies.slice(-8), labelOf, serving: rot.serving, wp, learnNote: lp?.note, target: setTarget };
+    const ctx = { us, them, timeoutsLeft, m, dM: threat.dM, streak: threat.streak, score: threat.score, factors: threat.factors, recent: rallies.slice(-8), labelOf, serving: rot.serving, wp, learnNote: lp?.note, target: setTarget, apiKey };
     judgeWithLLM(ctx).then(v => {
-      const result = v || localVerdict(threat);
+      const result = v || localVerdict(threat, rallies.slice(-8), labelOf, { deuce: isDeuce, setPointThem, lead: us - them });
       setJudging(false);
       const rec = { atIndex: log.length, alert: result.alert, urgency: result.urgency, reason: result.reason, us, them, m: +m.toFixed(2), action: result.alert ? "pending" : "hold" };
       setVerdicts(vs => [...vs, rec]);
@@ -654,15 +684,46 @@ export default function MomentumCoach() {
   };
   const tap3 = (team, idx) => commitRally(pending, { team, idx });
 
-  const undo = () => { judgedAt.current = -1; setVerdict(null); setLog(l => l.slice(0, -1)); };
+  const undo = () => {
+    judgedAt.current = -1; setVerdict(null);
+    const last = log[log.length - 1];
+    if (!last) return;
+    // 交代の取り消しはコート配置も元に戻す / 自チームTOの取り消しは残TOを返す
+    if (last.type === "sub") setLineup(lu => ({ ...lu, [last.team]: lu[last.team].map(i => i === last.in ? last.out : i) }));
+    if (last.type === "timeout" && (last.team ?? "us") === "us") setTimeoutsLeft(n => Math.min(MAX_TIMEOUTS, n + 1));
+    setLog(l => l.slice(0, -1));
+  };
+  const contextAdvice = () => buildBenchAdvice(rallies.slice(-8), labelOf, { deuce: isDeuce, setPointThem, lead: us - them }).advice;
   const takeTimeout = () => {
     setVerdicts(vs => vs.map(v => v.atIndex === alert?.recIndex ? { ...v, action: "taken" } : v));
-    setLog(l => [...l, { type: "timeout", t: Date.now() }]);
+    setLog(l => [...l, { type: "timeout", team: "us", t: Date.now() }]);
     setTimeoutsLeft(n => n - 1);
-    const advice = alert?.advice || "まず3本で確実に返すこと。";
+    const advice = alert?.advice || contextAdvice();
     setTimeoutS({ advice, sec: 30 });
     if (voiceOn) speak(advice); // ★30秒間に音声で指示を読み上げ(画面を見せながら耳でも伝わる)
     setAlertS(null); setVerdict(null);
+  };
+  // ★手動タイムアウト(どちらのチームが取ったかを記録 → TO効果の学習データになる)
+  const manualTimeoutUs = () => {
+    if (timeoutsLeft <= 0) return;
+    setLog(l => [...l, { type: "timeout", team: "us", t: Date.now() }]);
+    setTimeoutsLeft(n => n - 1);
+    const advice = contextAdvice();
+    setTimeoutS({ advice, sec: 30 });
+    if (voiceOn) speak(advice);
+    setAlertS(null); setVerdict(null);
+  };
+  const manualTimeoutThem = () => setLog(l => [...l, { type: "timeout", team: "them", t: Date.now() }]);
+  // ★選手交代: 控え選手をロスターに追加し、コート上の該当枠を差し替える(記録は履歴・学習へ)
+  const confirmSub = () => {
+    const { team, out, name } = subbing;
+    if (!name?.trim()) return;
+    const pos = roster[team][out].pos;
+    const inIdx = roster[team].length;
+    setRoster(r => ({ ...r, [team]: [...r[team], { pos, name: name.trim() }] }));
+    setLineup(l => ({ ...l, [team]: l[team].map(i => i === out ? inIdx : i) }));
+    setLog(l => [...l, { type: "sub", team, out, in: inIdx, t: Date.now() }]);
+    setSubbing(null);
   };
   const dismiss = () => {
     setVerdicts(vs => vs.map(v => v.atIndex === alert?.recIndex ? { ...v, action: "ignored" } : v));
@@ -750,7 +811,7 @@ export default function MomentumCoach() {
     setScoutLoading(true);
     const lossTxt = Object.entries(learned.lossPlays).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}${v}本`).join("、");
     const summary = `${learned.note} / 失点内訳: ${lossTxt}${learned.byServerN ? ` / サーブ順別得失点差: ${learned.byServer.map((s, i) => `${roster.us[i].name}${s.won - s.lost >= 0 ? "+" : ""}${s.won - s.lost}`).join("、")}` : ""}`;
-    const r = await scoutReport(summary);
+    const r = await scoutReport(summary, apiKey);
     setScoutRep(r || { title: "データ蓄積中", points: ["学習データをさらに蓄積すると、より具体的な戦術レポートを生成できます。観戦学習モードでプロや春高の試合を記録しましょう。"] });
     setScoutLoading(false);
   };
@@ -763,7 +824,7 @@ export default function MomentumCoach() {
     streamRef.current = null;
     const v = videoRef.current;
     if (v) { v.onended = null; try { v.pause(); } catch { /* noop */ } }
-    setFormStatus("idle"); setLiveM(null); setTrackQuality(null);
+    setFormStatus("idle"); setLiveM(null); setTrackQuality(null); setPoseCount(0);
   };
 
   const ensureLandmarker = async () => {
@@ -774,7 +835,7 @@ export default function MomentumCoach() {
     const files = await vision.FilesetResolver.forVisionTasks(`${MP_URL}/wasm`);
     const opts = delegate => ({
       baseOptions: { modelAssetPath: POSE_MODELS[formModel], delegate },
-      runningMode: "VIDEO", numPoses: 1,
+      runningMode: "VIDEO", numPoses: 4, // 複数人検出: タップで計測対象を選べるように
       minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.5, minTrackingConfidence: 0.5,
     });
     try {
@@ -787,24 +848,30 @@ export default function MomentumCoach() {
     return landmarkerRef.current;
   };
 
-  const drawPose = lm => {
+  // 複数人を描画: 計測対象は緑+関節点、それ以外は薄いグレー(タップで切替可能なことが視覚的に分かる)
+  const drawPoses = (poses, selIdx, selPts) => {
     const cv = canvasRef.current, v = videoRef.current;
     if (!cv || !v || !v.videoWidth) return;
     if (cv.width !== v.videoWidth) { cv.width = v.videoWidth; cv.height = v.videoHeight; }
     const ctx = cv.getContext("2d");
     ctx.clearRect(0, 0, cv.width, cv.height);
-    if (!lm) return;
-    ctx.strokeStyle = "#46d68c"; ctx.lineWidth = Math.max(2, cv.width / 220);
-    POSE_LINKS.forEach(([a, b]) => {
-      ctx.beginPath();
-      ctx.moveTo(lm[a].x * cv.width, lm[a].y * cv.height);
-      ctx.lineTo(lm[b].x * cv.width, lm[b].y * cv.height);
-      ctx.stroke();
-    });
-    ctx.fillStyle = "#FFC83D";
-    [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28].forEach(i => {
-      ctx.beginPath(); ctx.arc(lm[i].x * cv.width, lm[i].y * cv.height, Math.max(3, cv.width / 160), 0, Math.PI * 2); ctx.fill();
-    });
+    const paint = (lm, stroke, lw, dots) => {
+      ctx.strokeStyle = stroke; ctx.lineWidth = lw;
+      POSE_LINKS.forEach(([a, b]) => {
+        ctx.beginPath();
+        ctx.moveTo(lm[a].x * cv.width, lm[a].y * cv.height);
+        ctx.lineTo(lm[b].x * cv.width, lm[b].y * cv.height);
+        ctx.stroke();
+      });
+      if (dots) {
+        ctx.fillStyle = "#FFC83D";
+        [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28].forEach(i => {
+          ctx.beginPath(); ctx.arc(lm[i].x * cv.width, lm[i].y * cv.height, Math.max(3, cv.width / 160), 0, Math.PI * 2); ctx.fill();
+        });
+      }
+    };
+    (poses || []).forEach((lm, i) => { if (i !== selIdx) paint(lm, "rgba(138,150,184,.4)", Math.max(1.5, cv.width / 320), false); });
+    if (selIdx >= 0 && poses?.[selIdx]) paint(selPts ?? poses[selIdx], "#46d68c", Math.max(2, cv.width / 220), true);
   };
 
   // 1フレームごとの計測+スイング自動検出(状態機械)。返り値は描画用の平滑化済み骨格
@@ -935,7 +1002,8 @@ export default function MomentumCoach() {
       await v.play();
       // ★動画ファイルはスロー再生で解析(1コマあたりの推論時間を確保して取りこぼしを防ぐ)
       v.playbackRate = source === "file" ? 0.6 : 1.0;
-      frameRef.current = { state: "idle", lastRepAt: -1e9, hipBase: null, kneeWin: [], elbowWin: [], prevWrist: null, prevT: 0, rep: null, frame: 0, smooth: null, smoothW: null, lastQ: null, fps: 0, lastT: null, bodyH2d: null, scaleW: null };
+      frameRef.current = { state: "idle", lastRepAt: -1e9, hipBase: null, kneeWin: [], elbowWin: [], prevWrist: null, prevT: 0, rep: null, frame: 0, smooth: null, smoothW: null, lastQ: null, fps: 0, lastT: null, bodyH2d: null, scaleW: null, selCenter: null, lastN: 0 };
+      tapRef.current = null;
       runningRef.current = true;
       setTrackQuality(null);
       setFormStatus("running");
@@ -950,8 +1018,29 @@ export default function MomentumCoach() {
             // 計測時刻: 動画はメディア時間(スロー再生でも実速度の動きとして計測)、カメラは実時間
             const tMs = vid.srcObject ? now : vid.currentTime * 1000;
             const res = landmarkerRef.current.detectForVideo(vid, now);
-            const lm = res.landmarks?.[0];
-            drawPose(lm ? processFrame(lm, res.worldLandmarks?.[0], tMs) : null);
+            const poses = res.landmarks || [];
+            const fs = frameRef.current;
+            if (fs.lastN !== poses.length) { fs.lastN = poses.length; setPoseCount(poses.length); }
+            // ★計測対象の選択: タップ位置優先 → 前フレームの対象を追跡 → 初期値は最も大きく映っている人
+            let selIdx = -1;
+            if (poses.length) {
+              const centers = poses.map(lm => ({ x: (lm[11].x + lm[12].x + lm[23].x + lm[24].x) / 4, y: (lm[11].y + lm[12].y + lm[23].y + lm[24].y) / 4 }));
+              const nearest = p => centers.reduce((best, c, i) => { const d = Math.hypot(c.x - p.x, c.y - p.y); return d < best.d ? { i, d } : best; }, { i: 0, d: Infinity }).i;
+              if (tapRef.current) {
+                selIdx = nearest(tapRef.current); tapRef.current = null;
+                // 対象切替: 前の人の計測状態を完全リセット(レップ一覧は保持)
+                Object.assign(fs, { state: "idle", rep: null, hipBase: null, kneeWin: [], elbowWin: [], prevWrist: null, smooth: null, smoothW: null, bodyH2d: null, scaleW: null });
+              } else if (fs.selCenter) {
+                selIdx = nearest(fs.selCenter);
+              } else {
+                let best = 0, bh = -1;
+                poses.forEach((lm, i) => { const h = Math.abs((lm[27].y + lm[28].y) / 2 - lm[0].y); if (h > bh) { bh = h; best = i; } });
+                selIdx = best;
+              }
+              fs.selCenter = centers[selIdx];
+            }
+            const selPts = selIdx >= 0 ? processFrame(poses[selIdx], res.worldLandmarks?.[selIdx], tMs) : null;
+            drawPoses(poses, selIdx, selPts);
           } catch { /* フレーム失敗は無視 */ }
         }
         if (useRVFC) vid.requestVideoFrameCallback(() => step());
@@ -1015,10 +1104,11 @@ export default function MomentumCoach() {
     setFormAdviceLoading(true);
     const fmt = a => `打点+${Math.round(a.hit * 100)}% / 肘${Math.round(a.elbow)}° / 膝${Math.round(a.knee)}° / ジャンプ${Math.round(a.jump * 100)}%`;
     const summary = `種目: ${formKind} / 本数: ${repAvg.n} / 平均スコア${Math.round(repAvg.score)}点 / 計測平均: ${fmt(repAvg)} / テイクバック肘${Math.round(repAvg.cock)}° / 振り速度${repAvg.speed.toFixed(1)}身長/秒${activeRef ? ` / お手本(${activeRef.label}): ${fmt(activeRef)}` : ""}`;
-    const pts = await formCoachLLM(summary);
-    setFormAdvice(pts || FALLBACK_FORM_TIPS);
+    const pts = await formCoachLLM(summary, apiKey);
+    setFormAdvice(pts || buildFormTips(repAvg)); // API未接続でも計測値から毎回組み立てる
     setFormAdviceLoading(false);
   };
+  const saveApiKey = v => { setApiKey(v); try { localStorage.setItem(API_KEY_KEY, v); } catch { /* noop */ } };
 
   const editName = (team, idx, name) => {
     setRoster(r => ({ ...r, [team]: r[team].map((p, i) => i === idx ? { ...p, name } : p) }));
@@ -1035,7 +1125,7 @@ export default function MomentumCoach() {
   const combinedRallies = combinedLogs.flat().filter(r => r.type === "rally");
   const calib = calibrateWeights(combinedLogs);
   const afterTO = allSets.flatMap(s =>
-    s.log.map((r, i) => r.type === "timeout" ? i : -1).filter(i => i >= 0).map(i => next3Outcome(s.log, i + 1))
+    s.log.map((r, i) => r.type === "timeout" && (r.team ?? "us") === "us" ? i : -1).filter(i => i >= 0).map(i => next3Outcome(s.log, i + 1))
   ).filter(Boolean);
   const ignoredOut = allSets.flatMap(s =>
     s.verdicts.filter(v => v.action === "ignored").map(v => next3Outcome(s.log, v.atIndex))
@@ -1090,7 +1180,7 @@ export default function MomentumCoach() {
   const genMenu = async () => {
     setMenuLoading(true);
     const stats = `失点内訳: ${topLossPlay.map(([k, v]) => `${k}${v}本`).join("、")} / 失点元(選手別): ${topLoss.map(([k, v]) => `${labelOf(keyToTarget(k))}${v}本`).join("、")}${worstRot ? ` / 弱いローテ: R${worstRot.i + 1}(${worstRot.won}得点${worstRot.lost}失点)` : ""} / セットカウント ${setsWon.us}-${setsWon.them}`;
-    const result = await practiceMenu(stats);
+    const result = await practiceMenu(stats, apiKey);
     setMenu(result || FALLBACK_MENU);
     setMenuLoading(false);
   };
@@ -1102,7 +1192,7 @@ export default function MomentumCoach() {
       return `SET${allSets[t.si].setNo || t.si + 1}で${labelOf(t.r.target)}の${t.r.play}(勝率${before}%→${after}%)`;
     }).join("、");
     const summary = `セットカウント自${setsWon.us}-${setsWon.them}相手 / セットスコア: ${allSets.map(s => `${s.us}-${s.them}`).join(", ")} / 得点源: ${topWin.map(([k, v]) => `${labelOf(keyToTarget(k))}${v}点`).join("、")} / ターニングポイント: ${tp || "なし"} / タイムアウト${afterTO.length}回実施`;
-    const result = await matchStory(summary);
+    const result = await matchStory(summary, apiKey);
     setStory(result || { headline: "熱戦の記録", story: `セットカウント${setsWon.us}-${setsWon.them}。${topWin.length ? labelOf(keyToTarget(topWin[0][0])) + "がチームを牽引した。" : ""}データは次の勝利への足がかりだ。` });
     setStoryLoading(false);
   };
@@ -1151,7 +1241,7 @@ export default function MomentumCoach() {
     const wpPts = [{ x: px(0), y: pyW(0.5) }];
     s.log.forEach((r, i) => { if (r.type === "rally" && typeof r.wp === "number") wpPts.push({ x: px(i + 1), y: pyW(r.wp) }); });
     const dW = wpPts.map((p, i) => `${i ? "L" : "M"}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
-    const tos = s.log.map((r, i) => r.type === "timeout" ? i : -1).filter(i => i >= 0);
+    const tos = s.log.map((r, i) => r.type === "timeout" ? { i, team: r.team ?? "us" } : null).filter(Boolean);
     return (
       <div style={{ marginBottom: 10 }}>
         <div style={{ fontSize: 11, fontWeight: 800, marginBottom: 2, color: s.winner === "us" ? C.us : s.winner === "them" ? C.them : C.dim }}>
@@ -1161,10 +1251,10 @@ export default function MomentumCoach() {
           <line x1={padX} y1={chartH / 2} x2={chartW - padX} y2={chartH / 2} stroke={C.line} strokeDasharray="3 3" />
           <path d={dW} fill="none" stroke={C.warn} strokeWidth="1.5" opacity=".8" strokeDasharray="4 3" />
           <path d={d} fill="none" stroke={C.us} strokeWidth="2.5" strokeLinejoin="round" />
-          {tos.map((idx, i) => (
+          {tos.map(({ i: idx, team }, i) => (
             <g key={i}>
-              <circle cx={px(idx + 1)} cy={py(ser[idx + 1])} r="6" fill={C.warn} />
-              <text x={px(idx + 1)} y={py(ser[idx + 1]) + 3} textAnchor="middle" fontSize="7" fontWeight="bold" fill="#1a1a1a">T</text>
+              <circle cx={px(idx + 1)} cy={py(ser[idx + 1])} r="6" fill={team === "them" ? C.them : C.warn} />
+              <text x={px(idx + 1)} y={py(ser[idx + 1]) + 3} textAnchor="middle" fontSize="7" fontWeight="bold" fill={team === "them" ? "#fff" : "#1a1a1a"}>T</text>
             </g>
           ))}
           {s.verdicts.filter(v => v.action === "ignored").map((v, i) => (
@@ -1436,7 +1526,9 @@ export default function MomentumCoach() {
               <div style={{ fontSize: 13, lineHeight: 2.1 }}>
                 <div>🎯 サーブ時得点率: <b style={{ color: C.warn }}>{learned.pServe !== null ? `${Math.round(learned.pServe * 100)}%` : "データ不足(30ラリー以上必要)"}</b>{learned.pServe !== null && <span style={{ fontSize: 10, color: C.dim }}> → 勝率予測に適用</span>}</div>
                 <div>🛡 レシーブ時得点率: <b style={{ color: C.warn }}>{learned.pReceive !== null ? `${Math.round(learned.pReceive * 100)}%` : "—"}</b></div>
-                <div>⏱ TO後3本の立て直し率: <b style={{ color: C.warn }}>{learned.toRate !== null ? `${Math.round(learned.toRate * 100)}%` : "データ不足"}</b>{learned.toRate !== null && <span style={{ fontSize: 10, color: C.dim }}> → 分断係数 {learned.toFactor.toFixed(2)}</span>}</div>
+                <div>⏱ 自TO後3本の立て直し率: <b style={{ color: C.warn }}>{learned.toRate !== null ? `${Math.round(learned.toRate * 100)}%` : "データ不足"}</b>{learned.toRate !== null && <span style={{ fontSize: 10, color: C.dim }}> → 分断係数 {learned.toFactor.toFixed(2)}</span>}</div>
+                <div>🛑 相手TO後の得点維持率: <b style={{ color: C.warn }}>{learned.toRateOpp !== null ? `${Math.round(learned.toRateOpp * 100)}%` : "データ不足"}</b><span style={{ fontSize: 10, color: C.dim }}> ※相手TOで流れを切られていないか</span></div>
+                <div>🔄 交代直後3本の得点率: <b style={{ color: C.warn }}>{learned.subRate !== null ? `${Math.round(learned.subRate * 100)}%` : "データ不足"}</b></div>
               </div>
               <div style={{ fontSize: 11, fontWeight: 900, color: C.dim, margin: "10px 0 6px" }}>⚙️ W_t 重みの自動補正</div>
               {learned.calib.length === 0 ? (
@@ -1482,6 +1574,21 @@ export default function MomentumCoach() {
                 <button style={{ background: "none", border: `1px solid ${C.line}`, color: C.dim, borderRadius: 10, padding: "8px 14px", cursor: "pointer", fontWeight: 700, fontSize: 12, marginTop: 6 }} onClick={() => setScoutRep(null)}>↻ 再生成</button>
               </div>
             )}
+          </div>
+
+          {/* ★Claude API接続(任意)。未設定でもルールベース生成で状況対応の助言が出る */}
+          <div style={panel}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <span style={{ fontSize: 12, color: C.dim, fontWeight: 800 }}>🔑 Claude API接続(任意)</span>
+              <span style={{ fontSize: 10, fontWeight: 900, padding: "3px 10px", borderRadius: 8, background: apiKey ? "rgba(70,214,140,.15)" : "rgba(138,150,184,.15)", color: apiKey ? C.ok : C.dim }}>
+                {apiKey ? "✓ 設定済み" : "未設定(内蔵ロジックで動作)"}
+              </span>
+            </div>
+            <input type="password" value={apiKey} onChange={e => saveApiKey(e.target.value.trim())} placeholder="sk-ant-..."
+              style={{ width: "100%", boxSizing: "border-box", background: "#0A0F1E", border: `1px solid ${C.line}`, borderRadius: 10, color: C.txt, padding: "11px 10px", fontSize: 13, fontFamily: "monospace", outline: "none" }} />
+            <div style={{ fontSize: 10, color: C.dim, marginTop: 6, lineHeight: 1.7 }}>
+              設定するとTO判定・AI実況・練習メニュー・戦術レポート・フォーム助言がClaude AIで文章生成されます。未設定でも、その時の試合データ・計測値から内蔵ロジックが助言を組み立てます(毎回内容は変わります)。キーはこの端末のlocalStorageにのみ保存され、Anthropic以外には送信されません。
+            </div>
           </div>
 
           <div style={panel}>
@@ -1549,15 +1656,29 @@ export default function MomentumCoach() {
           </div>
 
           <div style={{ ...panel, padding: 10 }}>
-            <div style={{ position: "relative", borderRadius: 14, overflow: "hidden", background: "#000", minHeight: 180 }}>
+            <div style={{ position: "relative", borderRadius: 14, overflow: "hidden", background: "#000", minHeight: 180, cursor: formStatus === "running" ? "crosshair" : "default" }}
+              onClick={e => {
+                // ★映像をタップ→その位置に最も近い人を計測対象に切替
+                if (formStatus !== "running") return;
+                const r = e.currentTarget.getBoundingClientRect();
+                let x = (e.clientX - r.left) / r.width;
+                const y = (e.clientY - r.top) / r.height;
+                if (mirror) x = 1 - x;
+                tapRef.current = { x, y };
+              }}>
               <video ref={videoRef} playsInline muted style={{ width: "100%", display: "block", transform: mirror ? "scaleX(-1)" : "none" }} />
-              <canvas ref={canvasRef} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", transform: mirror ? "scaleX(-1)" : "none" }} />
+              <canvas ref={canvasRef} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", transform: mirror ? "scaleX(-1)" : "none", pointerEvents: "none" }} />
               <span style={{ position: "absolute", top: 8, left: 8, fontSize: 10, fontWeight: 900, padding: "4px 10px", borderRadius: 8, background: "rgba(10,15,30,.8)", color: formStatus === "running" ? C.ok : formStatus === "loading" ? C.warn : C.dim }}>
                 {formStatus === "running" ? `● 解析中(端末内)${liveM?.fps ? ` ${liveM.fps}fps` : ""}` : formStatus === "loading" ? "◌ AIエンジン読込中…" : "○ 停止中"}
               </span>
               {formStatus === "running" && trackQuality && (
                 <span style={{ position: "absolute", top: 8, right: 8, fontSize: 10, fontWeight: 900, padding: "4px 10px", borderRadius: 8, background: "rgba(10,15,30,.8)", color: trackQuality === "good" ? C.ok : C.warn }}>
                   {trackQuality === "good" ? "🟢 全身検出中" : trackQuality === "upper" ? "🟡 上半身のみ検出中" : "🟠 体が映っていません"}
+                </span>
+              )}
+              {formStatus === "running" && poseCount > 1 && (
+                <span style={{ position: "absolute", bottom: 8, left: 8, fontSize: 10, fontWeight: 900, padding: "4px 10px", borderRadius: 8, background: "rgba(10,15,30,.8)", color: C.warn, animation: "pulse 1.6s infinite" }}>
+                  👥 {poseCount}人検出中 — 計測したい選手をタップ
                 </span>
               )}
               {formStatus === "idle" && !formErr && (
@@ -1587,7 +1708,7 @@ export default function MomentumCoach() {
               </div>
             )}
             <div style={{ fontSize: 10, color: C.dim, marginTop: 8, lineHeight: 1.7 }}>
-              💡 全身(頭〜足首)が映る位置にカメラを置いてください。角度の計測は3D推定のため正面・斜めからでも可能ですが、おすすめは利き腕側の真横です。📁 動画ファイルは精度優先で自動スロー再生されます。🔒 映像は端末内で処理され、外部には一切送信されません。
+              💡 全身(頭〜足首)が映る位置にカメラを置いてください。角度の計測は3D推定のため正面・斜めからでも可能ですが、おすすめは利き腕側の真横です。👥 複数人が映っている場合、緑の骨格が計測対象です — 映像内の計測したい選手をタップすると切り替わります。📁 動画ファイルは精度優先で自動スロー再生されます。🔒 映像は端末内で処理され、外部には一切送信されません。
             </div>
           </div>
 
@@ -1908,6 +2029,58 @@ export default function MomentumCoach() {
             </div>
           </div>
 
+          {/* ★ベンチ操作: 手動タイムアウト(チーム別に記録→学習)と選手交代 */}
+          {!setEnd && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+              <button onClick={manualTimeoutUs} disabled={timeoutsLeft <= 0}
+                style={btn(timeoutsLeft > 0 ? "linear-gradient(160deg, #4a3a14, #332a10)" : "#1a2138", { fontSize: 12, padding: "11px 4px", border: `1px solid ${timeoutsLeft > 0 ? C.warn + "66" : C.line}`, color: timeoutsLeft > 0 ? C.txt : C.dim })}>
+                ⏱ 自チームTO({timeoutsLeft})
+              </button>
+              <button onClick={manualTimeoutThem}
+                style={btn("linear-gradient(160deg, #45202a, #331820)", { fontSize: 12, padding: "11px 4px", border: `1px solid ${C.them}44` })}>
+                ⏱ 相手TO
+              </button>
+              <button onClick={() => setSubbing(s => s ? null : {})}
+                style={btn(subbing ? "linear-gradient(160deg, #3a2a55, #2a1f40)" : "#232d47", { fontSize: 12, padding: "11px 4px", border: subbing ? "1px solid #B66EFF" : "1px solid transparent" })}>
+                🔄 選手交代
+              </button>
+            </div>
+          )}
+
+          {/* ★選手交代フロー */}
+          {subbing && !setEnd && (
+            <div style={{ ...panel, border: "1px solid #B66EFF55" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                <span style={{ fontSize: 12, fontWeight: 800, color: "#B66EFF" }}>
+                  🔄 選手交代 {subbing.team && `— ${subbing.team === "us" ? "自チーム" : "相手チーム"}`}
+                </span>
+                <button onClick={() => setSubbing(null)} style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", fontWeight: 800, fontSize: 13 }}>✕</button>
+              </div>
+              {!subbing.team ? (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  <button style={btn(`linear-gradient(160deg, ${C.us}, #2456c9)`, { padding: "14px 8px", fontSize: 14 })} onClick={() => setSubbing({ team: "us" })}>🔵 自チーム</button>
+                  <button style={btn(`linear-gradient(160deg, ${C.them}, #c22a20)`, { padding: "14px 8px", fontSize: 14 })} onClick={() => setSubbing({ team: "them" })}>🔴 相手チーム</button>
+                </div>
+              ) : subbing.out == null ? (<>
+                <div style={{ fontSize: 11, color: C.dim, fontWeight: 700, marginBottom: 8 }}>コートから下がる選手をタップ</div>
+                <CourtSelect team={subbing.team} onPick={(team, idx) => setSubbing(s => ({ ...s, out: idx }))} />
+              </>) : (<>
+                <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>
+                  OUT: <span style={{ color: C.them }}>{roster[subbing.team][subbing.out].name}</span>({roster[subbing.team][subbing.out].pos})→ 入る選手の名前:
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <input value={subbing.name || ""} onChange={e => setSubbing(s => ({ ...s, name: e.target.value }))} maxLength={10} placeholder="名前" autoFocus
+                    style={{ flex: 1, minWidth: 0, background: "#0A0F1E", border: `1px solid ${C.line}`, borderRadius: 10, color: C.txt, padding: "11px 10px", fontSize: 14, fontWeight: 700, fontFamily: "'Noto Sans JP', sans-serif", outline: "none" }} />
+                  <button onClick={confirmSub} disabled={!subbing.name?.trim()}
+                    style={btn(subbing.name?.trim() ? "linear-gradient(160deg, #1f5e40, #174530)" : "#232d47", { width: 110, fontSize: 13, padding: "11px 6px", border: `1px solid ${subbing.name?.trim() ? C.ok : C.line}` })}>
+                    ✓ 交代する
+                  </button>
+                </div>
+                <div style={{ fontSize: 10, color: C.dim, marginTop: 6 }}>ポジションは{roster[subbing.team][subbing.out].pos}を引き継ぎます。交代後3本の得点率はAI学習センターに蓄積されます。</div>
+              </>)}
+            </div>
+          )}
+
           {/* ★鬼門ローテ事前警告 */}
           {weakRotNow && !setEnd && (
             <div style={{ background: "rgba(255,200,61,.1)", border: `1px solid ${C.warn}55`, borderRadius: 16, padding: "10px 14px", fontSize: 12, fontWeight: 700, color: C.warn, animation: "slideUp .3s" }}>
@@ -1966,18 +2139,18 @@ export default function MomentumCoach() {
           <div style={panel}>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
               <span style={{ fontSize: 12, color: C.dim, fontWeight: 800 }}>ラリー履歴</span>
-              <span style={{ display: "flex", gap: 12 }}>
-                {matchKind === "scout" && (
-                  <button onClick={() => setLog(l => [...l, { type: "timeout", t: Date.now() }])}
-                    style={{ background: "none", border: "none", color: C.warn, fontWeight: 800, cursor: "pointer", fontSize: 12 }}>⏱ TO発生を記録</button>
-                )}
-                <button onClick={undo} disabled={!log.length} style={{ background: "none", border: "none", color: log.length ? C.warn : C.line, fontWeight: 800, cursor: "pointer", fontSize: 12 }}>↩ 1つ戻す</button>
-              </span>
+              <button onClick={undo} disabled={!log.length} style={{ background: "none", border: "none", color: log.length ? C.warn : C.line, fontWeight: 800, cursor: "pointer", fontSize: 12 }}>↩ 1つ戻す</button>
             </div>
             <div style={{ display: "flex", flexDirection: "column-reverse", gap: 6, maxHeight: 120, overflowY: "auto" }}>
               {!log.length && <div style={{ color: C.dim, fontSize: 13 }}>最初のラリーを記録して、流れを見える化しよう 🏐</div>}
               {log.map((r, i) => r.type === "timeout" ? (
-                <div key={i} style={{ fontSize: 13, color: C.warn, fontWeight: 800 }}>⏱ タイムアウト</div>
+                <div key={i} style={{ fontSize: 13, color: (r.team ?? "us") === "us" ? C.warn : C.them, fontWeight: 800 }}>
+                  ⏱ タイムアウト({(r.team ?? "us") === "us" ? "自チーム" : "相手"})
+                </div>
+              ) : r.type === "sub" ? (
+                <div key={i} style={{ fontSize: 13, color: "#B66EFF", fontWeight: 800 }}>
+                  🔄 交代({r.team === "us" ? "自" : "相手"}): {roster[r.team]?.[r.out]?.name} → {roster[r.team]?.[r.in]?.name}
+                </div>
               ) : (
                 <div key={i} style={{ fontSize: 13, display: "flex", gap: 8 }}>
                   <span style={{ color: r.e === 1 ? C.us : C.them, fontWeight: 900 }}>{r.e === 1 ? "+" : "−"}</span>
@@ -2046,7 +2219,7 @@ export default function MomentumCoach() {
             {allSets.length === 0 ? (
               <div style={{ fontSize: 12, color: C.dim }}>まだ記録がありません。</div>
             ) : allSets.map((s, i) => <SetChart key={i} s={s} label={`SET ${s.setNo || i + 1}`} />)}
-            <div style={{ fontSize: 10, color: C.dim }}>🟡T = タイムアウト実施 / 🔴○ = 警告を無視した地点</div>
+            <div style={{ fontSize: 10, color: C.dim }}>🟡T = 自チームTO / 🔴T = 相手TO / 🔴○ = 警告を無視した地点</div>
           </div>
 
           <div style={panel}>
