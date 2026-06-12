@@ -368,15 +368,19 @@ const angleDeg = (a, b, c) => {
   return Math.acos(Math.min(1, Math.max(-1, (v1.x * v2.x + v1.y * v2.y) / m))) * 180 / Math.PI;
 };
 
-// スイング1本の採点(満点100)。打点の高さ40 / 肘の伸び25 / 沈み込み20 / ジャンプ15
+// スイング1本の採点(満点100)。
+// 旧配点は「腕をまっすぐ上げるだけ」で打点+肘の65点がほぼ自動で入り、速度を見ていなかったため
+// 崩れたフォームでも90点台が出ていた。良いフォームを実際に分ける「振りの速さ」と
+// 「テイクバック(振り始め前に肘を曲げて引けているか)」を採点の中心に置き、しきい値も厳格化。
 function repScore(r) {
   const c01 = v => Math.min(1, Math.max(0, v));
-  return Math.round(
-    c01((r.maxWristH - 0.05) / 0.2) * 40 +
-    c01((r.elbowAtMax - 120) / 45) * 25 +
-    c01((150 - r.minKnee) / 50) * 20 +
-    c01(r.maxJump / 0.12) * 15
-  );
+  const swing = c01(((r.maxSpeed ?? 0) - 1.5) / 4.5) * 25;    // 振りの速さ: 6.0身長/秒で満点
+  const hit = c01((r.maxWristH - 0.15) / 0.23) * 25;          // 打点: 完全伸展(+38%)で満点
+  const cock = c01((150 - (r.minElbow ?? 150)) / 60) * 20;    // テイクバック: 肘90°まで曲げて満点
+  const ext = c01(((r.elbowAtMax ?? 120) - 120) / 50) * 15;   // インパクトの肘伸展: 170°で満点
+  const knee = c01((150 - r.minKnee) / 40) * 7;               // 沈み込み: 110°で満点
+  const jump = c01(((r.maxJump ?? 0) - 0.03) / 0.22) * 8;     // ジャンプ: +25%(身長比)で満点
+  return Math.round(swing + hit + cock + ext + knee + jump);
 }
 
 function loadFormRef() {
@@ -409,7 +413,7 @@ function loadFormRefs() {
 // ★AIフォームコーチ: 骨格計測の統計からLLMが改善アドバイスを生成
 async function formCoachLLM(summary) {
   const prompt = `あなたはバレーボールのフォーム指導コーチAI。骨格推定AIで計測したオーバーハンドスイングの統計から、具体的な改善アドバイスを作成せよ。
-計測値の意味: 打点=手首が鼻より上に出た高さ(身長比%、高いほど良い) / 肘角度=インパクト時の伸展(180°が完全伸展) / 膝角度=助走時の最小値(小さいほど深く沈む) / ジャンプ=腰の上昇量(身長比%)
+計測値の意味: 打点=手首が鼻より上に出た高さ(身長比%、高いほど良い) / 肘角度=インパクト時の伸展(180°が完全伸展) / テイクバック肘=振り始め前にどこまで肘を曲げて引けたか(90°以下が理想、大きいと棒振り) / 振り速度=手首の最高速度(身長比/秒、6.0以上が理想) / 膝角度=助走時の最小値(小さいほど深く沈む) / ジャンプ=腰の上昇量(身長比%)
 データ: ${summary}
 体の使い方を具体的に指示すること。精神論は禁止。
 次のJSONのみ出力(フェンス禁止): {"points":["アドバイス60字以内","…"]} 3件`;
@@ -826,6 +830,9 @@ export default function MomentumCoach() {
     // 直近2秒の最小膝角度(助走の沈み込み)
     fs.kneeWin.push({ t: tMs, knee });
     while (fs.kneeWin.length && tMs - fs.kneeWin[0].t > 2000) fs.kneeWin.shift();
+    // 直近1.2秒の肘角度(テイクバック=振り始め前に肘をどこまで曲げて引けたか)
+    fs.elbowWin.push({ t: tMs, elbow });
+    while (fs.elbowWin.length && tMs - fs.elbowWin[0].t > 1200) fs.elbowWin.shift();
     // 腰の基準線(非スイング時のみ更新)→ ジャンプ量
     if (fs.hipBase === null) fs.hipBase = hipY;
     if (fs.state === "idle") fs.hipBase = fs.hipBase * 0.95 + hipY * 0.05;
@@ -833,12 +840,17 @@ export default function MomentumCoach() {
 
     if (fs.state === "idle" && wristH > 0.05 && tMs - fs.lastRepAt > 800) {
       fs.state = "swing";
-      fs.rep = { startT: tMs, maxWristH: wristH, elbowAtMax: elbow, maxSpeed: speed, maxJump: jump, minKnee: Math.min(...fs.kneeWin.map(k => k.knee)) };
+      fs.rep = {
+        startT: tMs, maxWristH: wristH, elbowAtMax: elbow, maxSpeed: speed, maxJump: jump,
+        minKnee: Math.min(...fs.kneeWin.map(k => k.knee)),
+        minElbow: Math.min(...fs.elbowWin.map(e => e.elbow)), // テイクバックは振り始め前の窓から取る
+      };
     } else if (fs.state === "swing") {
       const r = fs.rep;
       if (wristH > r.maxWristH) { r.maxWristH = wristH; r.elbowAtMax = elbow; }
       r.maxSpeed = Math.max(r.maxSpeed, speed);
       r.maxJump = Math.max(r.maxJump, jump);
+      r.minElbow = Math.min(r.minElbow, elbow);
       if (wristH < -0.02) { // 手首が鼻の下に戻った=スイング終了
         fs.state = "idle"; fs.lastRepAt = tMs;
         // ★誤検出フィルタ: 高さ(打点に届いた)+速度(振った)+持続時間(瞬間ノイズでない)を満たすものだけ採用
@@ -877,7 +889,7 @@ export default function MomentumCoach() {
       await v.play();
       // ★動画ファイルはスロー再生で解析(1コマあたりの推論時間を確保して取りこぼしを防ぐ)
       v.playbackRate = source === "file" ? 0.6 : 1.0;
-      frameRef.current = { state: "idle", lastRepAt: -1e9, hipBase: null, kneeWin: [], prevWrist: null, prevT: 0, rep: null, frame: 0, smooth: null, lastQ: null, fps: 0, lastT: null };
+      frameRef.current = { state: "idle", lastRepAt: -1e9, hipBase: null, kneeWin: [], elbowWin: [], prevWrist: null, prevT: 0, rep: null, frame: 0, smooth: null, lastQ: null, fps: 0, lastT: null };
       runningRef.current = true;
       setTrackQuality(null);
       setFormStatus("running");
@@ -917,6 +929,8 @@ export default function MomentumCoach() {
     elbow: reps.reduce((s, r) => s + r.elbowAtMax, 0) / reps.length,
     knee: reps.reduce((s, r) => s + r.minKnee, 0) / reps.length,
     jump: reps.reduce((s, r) => s + r.maxJump, 0) / reps.length,
+    speed: reps.reduce((s, r) => s + (r.maxSpeed ?? 0), 0) / reps.length,
+    cock: reps.reduce((s, r) => s + (r.minElbow ?? 150), 0) / reps.length,
     n: reps.length,
   } : null;
 
@@ -954,7 +968,7 @@ export default function MomentumCoach() {
     if (!repAvg) return;
     setFormAdviceLoading(true);
     const fmt = a => `打点+${Math.round(a.hit * 100)}% / 肘${Math.round(a.elbow)}° / 膝${Math.round(a.knee)}° / ジャンプ${Math.round(a.jump * 100)}%`;
-    const summary = `種目: ${formKind} / 本数: ${repAvg.n} / 平均スコア${Math.round(repAvg.score)}点 / 計測平均: ${fmt(repAvg)}${activeRef ? ` / お手本(${activeRef.label}): ${fmt(activeRef)}` : ""}`;
+    const summary = `種目: ${formKind} / 本数: ${repAvg.n} / 平均スコア${Math.round(repAvg.score)}点 / 計測平均: ${fmt(repAvg)} / テイクバック肘${Math.round(repAvg.cock)}° / 振り速度${repAvg.speed.toFixed(1)}身長/秒${activeRef ? ` / お手本(${activeRef.label}): ${fmt(activeRef)}` : ""}`;
     const pts = await formCoachLLM(summary);
     setFormAdvice(pts || FALLBACK_FORM_TIPS);
     setFormAdviceLoading(false);
@@ -1562,7 +1576,7 @@ export default function MomentumCoach() {
                 <div key={r.t} style={{ display: "flex", gap: 8, fontSize: 11, padding: "6px 0", borderTop: i ? `1px solid ${C.line}` : "none", alignItems: "center" }}>
                   <span style={{ fontFamily: "Oswald", color: C.dim, width: 24 }}>#{reps.length - i}</span>
                   <span style={{ fontFamily: "Oswald", fontSize: 16, width: 44, color: r.score >= 70 ? C.ok : r.score >= 45 ? C.warn : C.them }}>{r.score}点</span>
-                  <span style={{ color: C.dim }}>打点+{Math.round(r.maxWristH * 100)}% / 肘{Math.round(r.elbowAtMax)}° / 膝{Math.round(r.minKnee)}° / 跳{Math.round(r.maxJump * 100)}%{jumpCmOf(r.maxJump)}</span>
+                  <span style={{ color: C.dim }}>振り{(r.maxSpeed ?? 0).toFixed(1)} / 打点+{Math.round(r.maxWristH * 100)}% / 引き{Math.round(r.minElbow ?? 150)}° / 伸び{Math.round(r.elbowAtMax)}° / 膝{Math.round(r.minKnee)}° / 跳{Math.round(r.maxJump * 100)}%{jumpCmOf(r.maxJump)}</span>
                 </div>
               ))}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 10 }}>
