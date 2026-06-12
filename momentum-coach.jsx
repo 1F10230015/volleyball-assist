@@ -362,11 +362,14 @@ const FAST_POINTS = new Set([13, 14, 15, 16]); // 肘・手首
 const FORM_REF_KEY = "vbmc_form_ref_v1";
 const POSE_LINKS = [[11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24], [23, 25], [25, 27], [24, 26], [26, 28]];
 
+// 3点のなす角(z座標があれば3Dで計算、なければ2D)
 const angleDeg = (a, b, c) => {
-  const v1 = { x: a.x - b.x, y: a.y - b.y }, v2 = { x: c.x - b.x, y: c.y - b.y };
-  const m = Math.hypot(v1.x, v1.y) * Math.hypot(v2.x, v2.y) || 1e-9;
-  return Math.acos(Math.min(1, Math.max(-1, (v1.x * v2.x + v1.y * v2.y) / m))) * 180 / Math.PI;
+  const v1 = { x: a.x - b.x, y: a.y - b.y, z: (a.z ?? 0) - (b.z ?? 0) };
+  const v2 = { x: c.x - b.x, y: c.y - b.y, z: (c.z ?? 0) - (b.z ?? 0) };
+  const m = Math.hypot(v1.x, v1.y, v1.z) * Math.hypot(v2.x, v2.y, v2.z) || 1e-9;
+  return Math.acos(Math.min(1, Math.max(-1, (v1.x * v2.x + v1.y * v2.y + v1.z * v2.z) / m))) * 180 / Math.PI;
 };
+const dist3 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, (a.z ?? 0) - (b.z ?? 0));
 
 // スイング1本の採点(満点100)。
 // 旧配点は「腕をまっすぐ上げるだけ」で打点+肘の65点がほぼ自動で入り、速度を見ていなかったため
@@ -793,7 +796,8 @@ export default function MomentumCoach() {
   };
 
   // 1フレームごとの計測+スイング自動検出(状態機械)。返り値は描画用の平滑化済み骨格
-  const processFrame = (lm, tMs) => {
+  // lm=2D正規化座標(描画・打点・ジャンプ用) / wl=3Dワールド座標(肘・膝角度と振り速度用。視点依存を低減)
+  const processFrame = (lm, wl, tMs) => {
     const fs = frameRef.current;
     // 実効fps(EMA)。低fps時の精度低下をユーザーが把握できるよう表示する
     if (fs.lastT != null && tMs > fs.lastT) {
@@ -809,6 +813,17 @@ export default function MomentumCoach() {
     });
     const pts = fs.smooth;
 
+    // ★3Dワールド座標も平滑化(肘・膝角度と振り速度を視点に依存せず計測するため)
+    let w = null;
+    if (wl) {
+      if (!fs.smoothW) fs.smoothW = wl.map(p => ({ x: p.x, y: p.y, z: p.z }));
+      else wl.forEach((p, i) => {
+        const a = FAST_POINTS.has(i) ? SMOOTH_ALPHA_FAST : SMOOTH_ALPHA;
+        const s = fs.smoothW[i]; s.x += (p.x - s.x) * a; s.y += (p.y - s.y) * a; s.z += (p.z - s.z) * a;
+      });
+      w = fs.smoothW;
+    }
+
     // ★可視性ゲート: 鼻・手首・膝・足首が映っていないフレームは計測しない(描画のみ)
     const minVis = Math.min(...KEY_VIS_POINTS.map(i => lm[i].visibility ?? 1));
     const quality = minVis > 0.35 ? "good" : "partial";
@@ -817,16 +832,21 @@ export default function MomentumCoach() {
 
     const noseY = pts[0].y;
     const ankleY = (pts[27].y + pts[28].y) / 2;
-    const bodyH = Math.max(0.1, ankleY - noseY); // 鼻〜足首の正規化身長
+    const bodyH = Math.max(0.1, ankleY - noseY); // 鼻〜足首の正規化身長(2D・上下方向の指標用)
     const hipY = (pts[23].y + pts[24].y) / 2;
-    const knee = Math.min(angleDeg(pts[23], pts[25], pts[27]), angleDeg(pts[24], pts[26], pts[28]));
+    // 角度・速度は3D座標を優先(真横以外からでも潰れない)。3Dが無い場合のみ2Dにフォールバック
+    const A = w ?? pts;
+    const knee = Math.min(angleDeg(A[23], A[25], A[27]), angleDeg(A[24], A[26], A[28]));
     const rightUp = pts[16].y < pts[15].y;
     const wrist = rightUp ? pts[16] : pts[15];
-    const elbow = rightUp ? angleDeg(pts[12], pts[14], pts[16]) : angleDeg(pts[11], pts[13], pts[15]);
+    const elbow = rightUp ? angleDeg(A[12], A[14], A[16]) : angleDeg(A[11], A[13], A[15]);
     const wristH = (noseY - wrist.y) / bodyH; // 手首が鼻よりどれだけ上か(身長比)
+    // 振り速度: 3D移動距離を3D身長(鼻〜足首中点)で正規化 → 単位は従来どおり「身長比/秒」
+    const wristA = rightUp ? A[16] : A[15];
+    const scale = w ? Math.max(0.3, dist3(w[0], { x: (w[27].x + w[28].x) / 2, y: (w[27].y + w[28].y) / 2, z: (w[27].z + w[28].z) / 2 })) : bodyH;
     let speed = 0;
-    if (fs.prevWrist && tMs > fs.prevT) speed = Math.hypot(wrist.x - fs.prevWrist.x, wrist.y - fs.prevWrist.y) / bodyH / ((tMs - fs.prevT) / 1000);
-    fs.prevWrist = { x: wrist.x, y: wrist.y }; fs.prevT = tMs;
+    if (fs.prevWrist && tMs > fs.prevT) speed = dist3(wristA, fs.prevWrist) / scale / ((tMs - fs.prevT) / 1000);
+    fs.prevWrist = { x: wristA.x, y: wristA.y, z: wristA.z }; fs.prevT = tMs;
     // 直近2秒の最小膝角度(助走の沈み込み)
     fs.kneeWin.push({ t: tMs, knee });
     while (fs.kneeWin.length && tMs - fs.kneeWin[0].t > 2000) fs.kneeWin.shift();
@@ -889,7 +909,7 @@ export default function MomentumCoach() {
       await v.play();
       // ★動画ファイルはスロー再生で解析(1コマあたりの推論時間を確保して取りこぼしを防ぐ)
       v.playbackRate = source === "file" ? 0.6 : 1.0;
-      frameRef.current = { state: "idle", lastRepAt: -1e9, hipBase: null, kneeWin: [], elbowWin: [], prevWrist: null, prevT: 0, rep: null, frame: 0, smooth: null, lastQ: null, fps: 0, lastT: null };
+      frameRef.current = { state: "idle", lastRepAt: -1e9, hipBase: null, kneeWin: [], elbowWin: [], prevWrist: null, prevT: 0, rep: null, frame: 0, smooth: null, smoothW: null, lastQ: null, fps: 0, lastT: null };
       runningRef.current = true;
       setTrackQuality(null);
       setFormStatus("running");
@@ -905,7 +925,7 @@ export default function MomentumCoach() {
             const tMs = vid.srcObject ? now : vid.currentTime * 1000;
             const res = landmarkerRef.current.detectForVideo(vid, now);
             const lm = res.landmarks?.[0];
-            drawPose(lm ? processFrame(lm, tMs) : null);
+            drawPose(lm ? processFrame(lm, res.worldLandmarks?.[0], tMs) : null);
           } catch { /* フレーム失敗は無視 */ }
         }
         if (useRVFC) vid.requestVideoFrameCallback(() => step());
@@ -1541,7 +1561,7 @@ export default function MomentumCoach() {
               </div>
             )}
             <div style={{ fontSize: 10, color: C.dim, marginTop: 8, lineHeight: 1.7 }}>
-              💡 側面から全身(頭〜足首)が映る位置にカメラを置いてください。📁 動画ファイルは精度優先で自動スロー再生されます。🔒 映像は端末内で処理され、外部には一切送信されません。
+              💡 全身(頭〜足首)が映る位置にカメラを置いてください。角度の計測は3D推定のため正面・斜めからでも可能ですが、おすすめは利き腕側の真横です。📁 動画ファイルは精度優先で自動スロー再生されます。🔒 映像は端末内で処理され、外部には一切送信されません。
             </div>
           </div>
 

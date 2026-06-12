@@ -13,7 +13,7 @@
   const REACT_URL = "https://esm.sh/react@18.3.1";
   const DOM_URL = "https://esm.sh/react-dom@18.3.1/client";
   try {
-    let src = await (await fetch("./momentum-coach.jsx")).text();
+    let src = await (await fetch("./momentum-coach.jsx", { cache: "no-store" })).text();
     src = src.replace('from "react"', `from "${REACT_URL}"`);
     const out = Babel.transform(src, { presets: [["react", { runtime: "automatic", importSource: REACT_URL }]], filename: "momentum-coach.jsx" }).code;
     const mod = await import(URL.createObjectURL(new Blob([out], { type: "text/javascript" })));
