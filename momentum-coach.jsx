@@ -2208,6 +2208,43 @@ export default function MomentumCoach() {
             </div>
           </div>
 
+          {/* ===== 入力(スコアボード直下に配置: 最頻操作なのでスクロール不要に) ===== */}
+          <div style={{ ...panel, minHeight: 240 }}>
+            <div style={{ fontSize: 12, color: C.dim, marginBottom: 10, fontWeight: 800, display: "flex", justifyContent: "space-between" }}>
+              <span>
+                {step === 0 ? "① 結果は?" : step === 1 ? "② どんなプレー?" :
+                  `③ ${targetTeamFor(pending) === "us" ? (pending.e === 1 ? "誰が決めた?" : "誰のエラー?") : (pending.e === 1 ? "相手の誰のエラー?" : "相手の誰にやられた?")}`}
+              </span>
+              <span style={{ display: "flex", gap: 4 }}>
+                {[0, 1, 2].map(i => <span key={i} style={{ width: 18, height: 6, borderRadius: 3, background: i <= step ? C.warn : C.line, transition: "background .2s" }} />)}
+              </span>
+            </div>
+            <div key={step} style={{ animation: "slideUp .22s ease-out" }}>
+              {step === 0 && (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  <button style={btn(`linear-gradient(160deg, ${C.us}, #2456c9)`, { padding: "44px 8px", fontSize: 27, fontWeight: 900, boxShadow: `0 6px 22px ${C.us}55` })} onPointerDown={press} onPointerUp={release} onPointerLeave={release} onClick={() => tap1(1)}>🙌<br />得点</button>
+                  <button style={btn(`linear-gradient(160deg, ${C.them}, #c22a20)`, { padding: "44px 8px", fontSize: 27, fontWeight: 900, boxShadow: `0 6px 22px ${C.them}55` })} onPointerDown={press} onPointerUp={release} onPointerLeave={release} onClick={() => tap1(-1)}>😣<br />失点</button>
+                </div>
+              )}
+              {step === 1 && (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  {PLAYS[pending.e === 1 ? "win" : "lose"].map(p => (
+                    <button key={p.id} style={btn(pending.e === 1 ? `linear-gradient(160deg, ${C.us}, #2456c9)` : `linear-gradient(160deg, ${C.them}, #c22a20)`)} onPointerDown={press} onPointerUp={release} onPointerLeave={release} onClick={() => tap2(p)}>
+                      <span style={{ fontSize: 24 }}>{p.emoji}</span><br />{p.label}
+                      <div style={{ fontSize: 11, opacity: .8, fontWeight: 600 }}>
+                        {p.autoServer ? `🏐 ${serverOf(p.autoServer).name} を自動記録` : `インパクト ×${p.w.toFixed(1)}`}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {step === 2 && <CourtSelect team={targetTeamFor(pending)} onPick={tap3} />}
+            </div>
+            {step > 0 && (
+              <button style={{ marginTop: 10, background: "none", border: `1px solid ${C.line}`, color: C.dim, borderRadius: 12, padding: "9px 16px", width: "100%", cursor: "pointer", fontWeight: 700 }} onClick={() => { setStep(0); setPending({}); }}>← やり直す</button>
+            )}
+          </div>
+
           {/* ★ベンチ操作: 手動タイムアウト(チーム別に記録→学習)と選手交代 */}
           {!setEnd && (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
@@ -2348,43 +2385,6 @@ export default function MomentumCoach() {
               <div style={{ marginTop: 6, lineHeight: 1.7 }}>📣 声かけ案: {verdict.advice}</div>
             </div>
           )}
-
-          {/* ===== 入力 ===== */}
-          <div style={{ ...panel, minHeight: 240 }}>
-            <div style={{ fontSize: 12, color: C.dim, marginBottom: 10, fontWeight: 800, display: "flex", justifyContent: "space-between" }}>
-              <span>
-                {step === 0 ? "① 結果は?" : step === 1 ? "② どんなプレー?" :
-                  `③ ${targetTeamFor(pending) === "us" ? (pending.e === 1 ? "誰が決めた?" : "誰のエラー?") : (pending.e === 1 ? "相手の誰のエラー?" : "相手の誰にやられた?")}`}
-              </span>
-              <span style={{ display: "flex", gap: 4 }}>
-                {[0, 1, 2].map(i => <span key={i} style={{ width: 18, height: 6, borderRadius: 3, background: i <= step ? C.warn : C.line, transition: "background .2s" }} />)}
-              </span>
-            </div>
-            <div key={step} style={{ animation: "slideUp .22s ease-out" }}>
-              {step === 0 && (
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                  <button style={btn(`linear-gradient(160deg, ${C.us}, #2456c9)`, { padding: "44px 8px", fontSize: 27, fontWeight: 900, boxShadow: `0 6px 22px ${C.us}55` })} onPointerDown={press} onPointerUp={release} onPointerLeave={release} onClick={() => tap1(1)}>🙌<br />得点</button>
-                  <button style={btn(`linear-gradient(160deg, ${C.them}, #c22a20)`, { padding: "44px 8px", fontSize: 27, fontWeight: 900, boxShadow: `0 6px 22px ${C.them}55` })} onPointerDown={press} onPointerUp={release} onPointerLeave={release} onClick={() => tap1(-1)}>😣<br />失点</button>
-                </div>
-              )}
-              {step === 1 && (
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                  {PLAYS[pending.e === 1 ? "win" : "lose"].map(p => (
-                    <button key={p.id} style={btn(pending.e === 1 ? `linear-gradient(160deg, ${C.us}, #2456c9)` : `linear-gradient(160deg, ${C.them}, #c22a20)`)} onPointerDown={press} onPointerUp={release} onPointerLeave={release} onClick={() => tap2(p)}>
-                      <span style={{ fontSize: 24 }}>{p.emoji}</span><br />{p.label}
-                      <div style={{ fontSize: 11, opacity: .8, fontWeight: 600 }}>
-                        {p.autoServer ? `🏐 ${serverOf(p.autoServer).name} を自動記録` : `インパクト ×${p.w.toFixed(1)}`}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
-              {step === 2 && <CourtSelect team={targetTeamFor(pending)} onPick={tap3} />}
-            </div>
-            {step > 0 && (
-              <button style={{ marginTop: 10, background: "none", border: `1px solid ${C.line}`, color: C.dim, borderRadius: 12, padding: "9px 16px", width: "100%", cursor: "pointer", fontWeight: 700 }} onClick={() => { setStep(0); setPending({}); }}>← やり直す</button>
-            )}
-          </div>
 
           {/* ===== 履歴 ===== */}
           <div style={panel}>
