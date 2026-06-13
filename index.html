@@ -2,8 +2,17 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Momentum Coach AI — preview</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Momentum Coach AI</title>
+<!-- PWA: ホーム画面に追加で全画面アプリとして起動 -->
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#0A0F1E" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Momentum Coach" />
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
+<link rel="icon" href="icon-192.png" />
 <script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
 <style>body{margin:0;background:#0A0F1E}</style>
 </head>
@@ -24,6 +33,12 @@
   } catch (err) {
     console.error("PREVIEW_FAIL", err);
     document.getElementById("root").innerHTML = `<pre style="color:#ff8c84;padding:20px;white-space:pre-wrap">${String(err)}</pre>`;
+  }
+</script>
+<script>
+  // サービスワーカー登録(オフライン起動 + アプリ化)。更新は常に最新を取りに行く network-first
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(() => {}));
   }
 </script>
 </body>
