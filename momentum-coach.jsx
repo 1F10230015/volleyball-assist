@@ -243,6 +243,90 @@ function calibrateWeights(logs) {
   return out;
 }
 
+// ====== ★モメンタム予報エンジン(崩れパターンの自動発見 + 事前予知) ======
+// 本作の核「事後分析でも事中警告でもなく"予知"へ」。蓄積ログから連鎖失点(崩れ)の
+// 引き金になるプレー系列をマイニングし、試合中はその「崩れの型」との一致度から
+// 数本先の崩壊リスクを天気予報のように提示する。データが無くてもバレーの定石トリガーで動く。
+function mineMomentumPatterns(logs) {
+  const collapses = [], comebacks = [];
+  const triggerFirst = {}, comebackFirst = {};
+  const seen = {}; // seen[L]=損失ストリークが長さLに到達した回数 → 条件付き継続確率に使う
+  for (const log of logs) {
+    const rs = (log || []).filter(r => r.type === "rally");
+    // 連続失点(≥3)=崩れ / 連続得点(≥3)=反撃 の run を抽出し、最初のプレーを引き金として集計
+    let i = 0;
+    while (i < rs.length) {
+      const e = rs[i].e; let j = i;
+      while (j < rs.length && rs[j].e === e) j++;
+      const len = j - i;
+      if (e === -1 && len >= 3) { collapses.push(len); triggerFirst[rs[i].play] = (triggerFirst[rs[i].play] || 0) + 1; }
+      if (e === 1 && len >= 3) { comebacks.push(len); comebackFirst[rs[i].play] = (comebackFirst[rs[i].play] || 0) + 1; }
+      i = j;
+    }
+    // 損失ストリークの条件付き継続確率: P(L+1に伸びる | Lに到達)= seen[L+1]/seen[L]
+    let s = 0;
+    for (const r of rs) { if (r.e === -1) { s++; seen[s] = (seen[s] || 0) + 1; } else s = 0; }
+  }
+  const rank = (obj, denom) => Object.entries(obj).sort((a, b) => b[1] - a[1])
+    .slice(0, 3).map(([play, count]) => ({ play, count, pct: denom ? count / denom : 0 }));
+  const pExtend = {};
+  for (let L = 1; L <= 4; L++) if (seen[L]) pExtend[L] = (seen[L + 1] || 0) / seen[L];
+  return {
+    collapseCount: collapses.length, comebackCount: comebacks.length,
+    topTriggers: rank(triggerFirst, collapses.length), topComeback: rank(comebackFirst, comebacks.length),
+    pExtend, seen,
+    ready: collapses.length >= 2, // パターンが意味を持つ最低データ量
+  };
+}
+
+// 試合中の崩壊リスク予報: 直近の失点系列が「崩れの型」とどれだけ一致するか(0-100%)
+function forecastCollapse(recent, patterns, opts = {}) {
+  const losses = [];
+  for (let i = recent.length - 1; i >= 0; i--) { if (recent[i].e === -1) losses.unshift(recent[i]); else break; }
+  const trailing = losses.length;
+  let risk = [0, 18, 44, 66, 82][Math.min(4, trailing)];
+  let trigger = null, learnedHit = false;
+  // 学習: 現在のストリーク長から「もう1本失点して崩れが伸びる」経験的確率を混ぜる
+  const pExt = patterns?.pExtend?.[trailing];
+  if (typeof pExt === "number" && (patterns.seen?.[trailing] || 0) >= 3) { risk = Math.round(risk * 0.45 + pExt * 100 * 0.55); learnedHit = true; }
+  // 定石トリガー(バレーの崩れの典型)
+  const last2 = losses.slice(-2).map(r => r.play);
+  if (last2.length === 2 && last2.every(p => p === "被サーブ")) { risk += 15; trigger = "サーブで連続ブレイク中 — 崩れの典型パターン"; }
+  else if (losses.filter(r => r.play === "自滅エラー").length >= 2) { risk += 12; trigger = "自滅エラーの連鎖 — 最も危険な崩れ方"; }
+  else if (last2.length === 2 && last2.every(p => p === "被スパイク")) { risk += 9; trigger = "同じ攻撃に連続で抜かれている"; }
+  if (opts.justLostServe && trailing >= 1) risk += 7;
+  if (opts.dM < -0.4) risk += Math.min(12, -opts.dM * 9);
+  // 学習した引き金(過去の崩れがどのプレーから始まったか)で文面を補強
+  if (!trigger && trailing >= 1 && patterns?.ready && patterns.topTriggers[0]?.pct >= 0.4) {
+    const t = patterns.topTriggers[0];
+    trigger = `過去の崩れの${Math.round(t.pct * 100)}%が「${t.play}」から始まっている`; learnedHit = true;
+  }
+  risk = Math.max(0, Math.min(99, Math.round(risk)));
+  const level = risk < 20 ? { i: "☀️", t: "安定", c: "#46d68c" }
+    : risk < 40 ? { i: "🌤", t: "おおむね安定", c: "#46d68c" }
+      : risk < 60 ? { i: "☁️", t: "雲行きが怪しい", c: "#FFC83D" }
+        : risk < 78 ? { i: "🌧", t: "崩れの兆候", c: "#FF8C42" }
+          : { i: "⛈", t: "崩壊警報", c: "#FF4A3D" };
+  return { risk, trailing, trigger, level, learnedHit };
+}
+
+// 着地点予測: 次Nラリーの点差をモンテカルロで前向きに回し、確率帯(P10/P50/P90)を返す
+function forecastCone(us, them, m, serving, lp, N = 6) {
+  const pServe = lp?.pServe ?? 0.45, pReceive = lp?.pReceive ?? 0.55, sims = 240;
+  const cols = Array.from({ length: N + 1 }, () => []);
+  for (let s = 0; s < sims; s++) {
+    let a = us, b = them, srv = serving, mShift = 0.04 * m;
+    cols[0].push(a - b);
+    for (let g = 1; g <= N; g++) {
+      const p = Math.min(0.85, Math.max(0.15, (srv === "us" ? pServe : pReceive) + mShift));
+      if (Math.random() < p) { a++; srv = "us"; } else { b++; srv = "them"; }
+      mShift *= 0.9; cols[g].push(a - b);
+    }
+  }
+  const q = (arr, t) => { const z = [...arr].sort((x, y) => x - y); return z[Math.floor(t * (z.length - 1))]; };
+  return cols.map(col => ({ p10: q(col, 0.1), p50: q(col, 0.5), p90: q(col, 0.9) }));
+}
+
 async function practiceMenu(stats, apiKey) {
   const prompt = `バレーボール初中級チームのコーチAI。今日の試合の弱点データから次回練習メニューを提案せよ。
 弱点: ${stats}
@@ -577,6 +661,18 @@ export default function MomentumCoach() {
 
   // ★リアルタイム勝率(モンテカルロ、サーブ権+学習パラメータ+先取点数反映)
   const wp = useMemo(() => winProbSim(us, them, m, rot.serving, lp, setTarget), [log.length, lp, setTarget]); // eslint-disable-line
+
+  // ★モメンタム予報: 蓄積ログから「崩れの型」をマイニングし、今の系列との一致度で崩壊リスクを予知
+  const patterns = useMemo(() => mineMomentumPatterns(learnEntries.flatMap(e => (e.sets || []).map(s => s.log || []))), [learnEntries]);
+  const lastRally = rallies[rallies.length - 1];
+  const justLostServe = !!lastRally && lastRally.e === -1 && lastRally.servingAtStart === "us";
+  const forecast = mode === "game" && !setEnd
+    ? forecastCollapse(rallies.slice(-8), learnApply ? patterns : null, { dM: threat.dM, justLostServe })
+    : null;
+  const cone = useMemo(
+    () => (mode === "game" && !setEnd ? forecastCone(us, them, m, rot.serving, lp, 6) : null),
+    [log.length, lp, mode, setEnd] // eslint-disable-line
+  );
 
   const isDeuce = us >= setTarget - 1 && them >= setTarget - 1;
   const setPointUs = !setEnd && us >= setTarget - 1 && us - them >= 1;
@@ -1472,8 +1568,8 @@ export default function MomentumCoach() {
             </div>
           )}
 
-          <HomeCard emoji="🏐" title="試合モード" accent={C.us}
-            desc="自チームの試合をリアルタイム記録。AIがタイムアウトの取り時を2段階判定し、勝率と流れを可視化する。"
+          <HomeCard emoji="🏐" title="試合モード" accent={C.us} badge="🌦 崩れ予報つき"
+            desc="試合をリアルタイム記録。AIがTOの取り時を判定し、勝率と流れを可視化。さらに『崩れの型』を予知して連続失点する前に警告する。"
             onClick={() => { setMatchKind("match"); setSelSlot(null); setMode("setup"); }} />
           <HomeCard emoji="📺" title="観戦・学習モード" accent="#B66EFF"
             desc="プロや春高の試合を動画・観戦しながら記録。データは自動でAIの学習素材になり、判定精度が上がる。"
@@ -1556,6 +1652,53 @@ export default function MomentumCoach() {
               📺 観戦・学習モードでプロや春高の試合を記録するか、下のインポートから試合JSONを追加してください。
             </div>
           )}
+
+          {/* ★連鎖の型ライブラリ(崩れ/反撃パターンの自動発見) */}
+          <div style={{ ...panel, border: "1px solid #B66EFF44" }}>
+            <div style={{ fontSize: 12, color: "#B66EFF", fontWeight: 800, marginBottom: 4 }}>🔗 連鎖の型ライブラリ(モメンタム予報の学習元)</div>
+            <div style={{ fontSize: 10, color: C.dim, lineHeight: 1.7, marginBottom: 10 }}>
+              蓄積データから連続失点(崩れ)・連続得点(反撃)の引き金になったプレーを自動抽出。試合中の「🌦 モメンタム予報」はこの型と今の系列を照合して崩壊を予知します。
+            </div>
+            {!patterns.ready ? (
+              <div style={{ fontSize: 12, color: C.dim }}>
+                崩れパターンはまだ検出されていません(連続失点の試合データが2件以上で発見開始)。データが少ない間は、予報はバレーの定石トリガーで動作します。
+              </div>
+            ) : (<>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, textAlign: "center", marginBottom: 10 }}>
+                <div style={{ background: "#0A0F1E", borderRadius: 12, padding: 10 }}>
+                  <div style={{ fontFamily: "Oswald", fontSize: 24, color: C.them }}>{patterns.collapseCount}</div>
+                  <div style={{ fontSize: 9, color: C.dim }}>検出した崩れ(3連続失点〜)</div>
+                </div>
+                <div style={{ background: "#0A0F1E", borderRadius: 12, padding: 10 }}>
+                  <div style={{ fontFamily: "Oswald", fontSize: 24, color: C.us }}>{patterns.comebackCount}</div>
+                  <div style={{ fontSize: 9, color: C.dim }}>検出した反撃(3連続得点〜)</div>
+                </div>
+              </div>
+              {patterns.topTriggers.length > 0 && (<>
+                <div style={{ fontSize: 11, fontWeight: 900, color: C.them, marginBottom: 6 }}>⚡ 崩れの引き金 — このプレーから連鎖が始まりやすい</div>
+                {patterns.topTriggers.map((t, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, fontSize: 12 }}>
+                    <span style={{ width: 90, fontWeight: 800 }}>{t.play}</span>
+                    <div style={{ flex: 1, height: 9, background: "#0A0F1E", borderRadius: 5, overflow: "hidden" }}>
+                      <div style={{ width: `${t.pct * 100}%`, height: "100%", background: C.them, borderRadius: 5 }} />
+                    </div>
+                    <span style={{ fontFamily: "Oswald", width: 38, textAlign: "right", color: C.them }}>{Math.round(t.pct * 100)}%</span>
+                  </div>
+                ))}
+              </>)}
+              {patterns.topComeback.length > 0 && (
+                <div style={{ fontSize: 11, lineHeight: 1.8, marginTop: 8 }}>
+                  <span style={{ fontWeight: 900, color: C.us }}>🔥 反撃の口火: </span>
+                  {patterns.topComeback.map(t => `${t.play}(${Math.round(t.pct * 100)}%)`).join(" / ")}
+                </div>
+              )}
+              {patterns.pExtend[2] != null && (
+                <div style={{ fontSize: 11, color: C.dim, marginTop: 8, lineHeight: 1.7 }}>
+                  📈 2連続失点した時、3本目も失点して崩れに発展する確率: <b style={{ color: C.warn }}>{Math.round(patterns.pExtend[2] * 100)}%</b>(このチーム実測)
+                </div>
+              )}
+            </>)}
+          </div>
 
           <div style={{ ...panel, border: `1px solid ${C.warn}44` }}>
             <div style={{ fontSize: 12, color: C.warn, fontWeight: 800, marginBottom: 10 }}>🎓 AI戦術レポート(学習データ→戦術知見)</div>
@@ -2080,6 +2223,57 @@ export default function MomentumCoach() {
               </>)}
             </div>
           )}
+
+          {/* ★モメンタム予報(崩れの予知 + 着地点予測コーン) */}
+          {forecast && (() => {
+            const cw = 300, ch = 86, padX = 10, padTop = 10;
+            const N = cone.length - 1;
+            const xs = i => padX + (i / N) * (cw - 2 * padX);
+            const span = Math.max(3, Math.ceil(Math.max(...cone.flatMap(p => [Math.abs(p.p10), Math.abs(p.p90)]))));
+            const ys = v => ch / 2 - (v / span) * (ch / 2 - padTop);
+            const band = [...cone.map((p, i) => `${xs(i)},${ys(p.p90)}`), ...cone.map((p, i) => `${xs(i)},${ys(p.p10)}`).reverse()];
+            const mid = cone.map((p, i) => `${i ? "L" : "M"}${xs(i)},${ys(p.p50)}`).join(" ");
+            const end = cone[N];
+            const storm = forecast.risk >= 78;
+            return (
+              <div style={{ ...panel, border: `1px solid ${forecast.level.c}55`, animation: storm ? "siren 1.4s infinite" : "none" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <div style={{ fontSize: 38, animation: forecast.risk >= 60 ? "pulse 1.2s infinite" : "floatBall 3s ease-in-out infinite" }}>{forecast.level.i}</div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                      <span style={{ fontSize: 13, fontWeight: 900 }}>🌦 モメンタム予報</span>
+                      <span style={{ fontSize: 12, fontWeight: 900, color: forecast.level.c }}>{forecast.level.t}</span>
+                    </div>
+                    <div style={{ fontSize: 10, color: C.dim, marginTop: 2 }}>
+                      崩壊リスク <b style={{ fontFamily: "Oswald", fontSize: 15, color: forecast.level.c }}>{forecast.risk}%</b>
+                      <span style={{ marginLeft: 8 }}>{forecast.learnedHit ? "🧠 学習データ反映" : "定石ベース"}</span>
+                    </div>
+                  </div>
+                </div>
+                <div style={{ height: 8, borderRadius: 4, background: "#0A0F1E", overflow: "hidden", margin: "8px 0" }}>
+                  <div style={{ height: "100%", width: `${forecast.risk}%`, background: forecast.level.c, borderRadius: 4, transition: "width .5s, background .5s" }} />
+                </div>
+                {forecast.trigger && (
+                  <div style={{ fontSize: 11, fontWeight: 700, color: forecast.level.c, lineHeight: 1.6, marginBottom: 8 }}>
+                    ⚡ {forecast.trigger}
+                  </div>
+                )}
+                <div style={{ fontSize: 10, color: C.dim, fontWeight: 800, marginBottom: 2 }}>📡 着地点予測(次の{N}ラリーで点差はどこへ?)</div>
+                <svg viewBox={`0 0 ${cw} ${ch}`} style={{ width: "100%" }}>
+                  <line x1={padX} y1={ch / 2} x2={cw - padX} y2={ch / 2} stroke={C.line} strokeDasharray="3 3" />
+                  <polygon points={band.join(" ")} fill={end.p50 >= 0 ? `${C.us}22` : `${C.them}22`} />
+                  <path d={mid} fill="none" stroke={end.p50 >= 0 ? C.us : C.them} strokeWidth="2.5" strokeLinejoin="round" />
+                  {cone.map((p, i) => <circle key={i} cx={xs(i)} cy={ys(p.p50)} r="2" fill={end.p50 >= 0 ? C.us : C.them} />)}
+                  <text x={cw - padX} y={ys(end.p50) - 5} textAnchor="end" fontSize="11" fontFamily="Oswald" fontWeight="700" fill={end.p50 >= 0 ? C.us : C.them}>
+                    {end.p50 >= 0 ? "+" : ""}{end.p50}
+                  </text>
+                </svg>
+                <div style={{ fontSize: 10, color: C.dim, lineHeight: 1.6 }}>
+                  このまま進むと{N}本後の点差は <b style={{ color: end.p50 >= 0 ? C.us : C.them }}>{end.p50 >= 0 ? "+" : ""}{end.p50}</b> 前後(楽観{end.p90 >= 0 ? "+" : ""}{end.p90}〜悲観{end.p10 >= 0 ? "+" : ""}{end.p10})。帯が下に膨らむほど崩れの危険。
+                </div>
+              </div>
+            );
+          })()}
 
           {/* ★鬼門ローテ事前警告 */}
           {weakRotNow && !setEnd && (
