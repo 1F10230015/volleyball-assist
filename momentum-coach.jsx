@@ -479,15 +479,20 @@ const dist3 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, (a.z ?? 0) - (b.z ?? 0)
 // 旧配点は「腕をまっすぐ上げるだけ」で打点+肘の65点がほぼ自動で入り、速度を見ていなかったため
 // 崩れたフォームでも90点台が出ていた。良いフォームを実際に分ける「振りの速さ」と
 // 「テイクバック(振り始め前に肘を曲げて引けているか)」を採点の中心に置き、しきい値も厳格化。
-function repScore(r) {
+// 採点の内訳(満点100の配点と、各項目で実際に獲得した点)。採点UIと同じ単一の真実源。
+function repBreakdown(r) {
   const c01 = v => Math.min(1, Math.max(0, v));
-  const swing = c01(((r.maxSpeed ?? 0) - 1.5) / 4.5) * 25;    // 振りの速さ: 6.0身長/秒で満点
-  const hit = c01((r.maxWristH - 0.15) / 0.23) * 25;          // 打点: 完全伸展(+38%)で満点
-  const cock = c01((150 - (r.minElbow ?? 150)) / 60) * 20;    // テイクバック: 肘90°まで曲げて満点
-  const ext = c01(((r.elbowAtMax ?? 120) - 120) / 50) * 15;   // インパクトの肘伸展: 170°で満点
-  const knee = c01((150 - r.minKnee) / 40) * 7;               // 沈み込み: 110°で満点
-  const jump = c01(((r.maxJump ?? 0) - 0.03) / 0.22) * 8;     // ジャンプ: +25%(身長比)で満点
-  return Math.round(swing + hit + cock + ext + knee + jump);
+  return [
+    { key: "振りの速さ", earned: c01(((r.maxSpeed ?? 0) - 1.5) / 4.5) * 25, max: 25, val: `${(r.maxSpeed ?? 0).toFixed(1)}`, unit: "", goal: "6.0", lower: false },
+    { key: "打点の高さ", earned: c01((r.maxWristH - 0.15) / 0.23) * 25, max: 25, val: `+${Math.round(r.maxWristH * 100)}`, unit: "%", goal: "+38%", lower: false },
+    { key: "テイクバック", earned: c01((150 - (r.minElbow ?? 150)) / 60) * 20, max: 20, val: `${Math.round(r.minElbow ?? 150)}`, unit: "°", goal: "90°以下", lower: true },
+    { key: "肘の伸び", earned: c01(((r.elbowAtMax ?? 120) - 120) / 50) * 15, max: 15, val: `${Math.round(r.elbowAtMax ?? 120)}`, unit: "°", goal: "170°", lower: false },
+    { key: "沈み込み", earned: c01((150 - r.minKnee) / 40) * 7, max: 7, val: `${Math.round(r.minKnee)}`, unit: "°", goal: "110°以下", lower: true },
+    { key: "ジャンプ", earned: c01(((r.maxJump ?? 0) - 0.03) / 0.22) * 8, max: 8, val: `${Math.round((r.maxJump ?? 0) * 100)}`, unit: "%", goal: "+25%", lower: false },
+  ];
+}
+function repScore(r) {
+  return Math.round(repBreakdown(r).reduce((s, b) => s + b.earned, 0));
 }
 
 function loadFormRef() {
@@ -650,10 +655,11 @@ export default function MomentumCoach() {
   const rallies = log.filter(r => r.type === "rally");
   const us = rallies.filter(r => r.e === 1).length;
   const them = rallies.filter(r => r.e === -1).length;
-  const series = momentumSeries(log, toF);
+  // 重い派生値はメモ化(タイムアウトの秒読みなど log と無関係な再描画では再計算しない)
+  const series = useMemo(() => momentumSeries(log, toF), [log, toF]);
   const m = series[series.length - 1];
   const pct = ((Math.max(M_MIN, Math.min(M_MAX, m)) - M_MIN) / (M_MAX - M_MIN)) * 100;
-  const threat = assessThreat(log, us, them, labelOf, toF, setTarget);
+  const threat = useMemo(() => assessThreat(log, us, them, labelOf, toF, setTarget), [log, toF, setTarget]); // eslint-disable-line
   const threatPct = Math.min(100, (threat.score / 5) * 100);
 
   const rot = deriveRotation(log, firstServe);
@@ -667,9 +673,10 @@ export default function MomentumCoach() {
   const patterns = useMemo(() => mineMomentumPatterns(learnEntries.flatMap(e => (e.sets || []).map(s => s.log || []))), [learnEntries]);
   const lastRally = rallies[rallies.length - 1];
   const justLostServe = !!lastRally && lastRally.e === -1 && lastRally.servingAtStart === "us";
-  const forecast = mode === "game" && !setEnd
-    ? forecastCollapse(rallies.slice(-8), learnApply ? patterns : null, { dM: threat.dM, justLostServe })
-    : null;
+  const forecast = useMemo(
+    () => (mode === "game" && !setEnd ? forecastCollapse(rallies.slice(-8), learnApply ? patterns : null, { dM: threat.dM, justLostServe }) : null),
+    [log, learnApply, patterns, mode, setEnd] // eslint-disable-line
+  );
   const cone = useMemo(
     () => (mode === "game" && !setEnd ? forecastCone(us, them, m, rot.serving, lp, 6) : null),
     [log.length, lp, mode, setEnd] // eslint-disable-line
@@ -1173,6 +1180,7 @@ export default function MomentumCoach() {
     const entry = {
       id: `ref-${Date.now()}`, label: `マイお手本 ${new Date().toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" })}`,
       kind: formKind, hit: repAvg.hit, elbow: repAvg.elbow, knee: repAvg.knee, jump: repAvg.jump,
+      speed: repAvg.speed, cock: repAvg.cock, // 振り速度・引き肘も保存(全項目比較用)
       n: repAvg.n, enabled: true, savedAt: new Date().toISOString(),
     };
     setFormRefs(rs => persistRefs([...rs.map(r => r.kind === formKind ? { ...r, enabled: false } : r), entry]));
@@ -1880,6 +1888,26 @@ export default function MomentumCoach() {
               <span style={{ fontSize: 12, color: C.dim, fontWeight: 800 }}>🏐 検出スイング: {reps.length}本</span>
               {repAvg && <span style={{ fontFamily: "Oswald", fontSize: 22, color: repAvg.score >= 70 ? C.ok : repAvg.score >= 45 ? C.warn : C.them }}>平均 {Math.round(repAvg.score)}点</span>}
             </div>
+            {repAvg && (
+              <div style={{ background: "#0A0F1E", borderRadius: 14, padding: "10px 12px", marginBottom: 10 }}>
+                <div style={{ fontSize: 10, color: C.dim, fontWeight: 800, marginBottom: 8 }}>📋 採点の内訳 — どこで点を取れて、どこで落としたか</div>
+                {repBreakdown({ maxSpeed: repAvg.speed, maxWristH: repAvg.hit, minElbow: repAvg.cock, elbowAtMax: repAvg.elbow, minKnee: repAvg.knee, maxJump: repAvg.jump }).map(b => {
+                  const ratio = b.earned / b.max;
+                  const col = ratio >= 0.7 ? C.ok : ratio >= 0.4 ? C.warn : C.them;
+                  return (
+                    <div key={b.key} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                      <span style={{ width: 72, fontSize: 11, fontWeight: 700 }}>{b.key}</span>
+                      <span style={{ fontFamily: "Oswald", fontSize: 12, width: 42, textAlign: "right", color: col }}>{b.val}{b.unit}</span>
+                      <span style={{ flex: 1, height: 9, background: "#161E33", borderRadius: 5, overflow: "hidden", position: "relative" }}>
+                        <span style={{ display: "block", height: "100%", width: `${ratio * 100}%`, background: col, borderRadius: 5, transition: "width .4s" }} />
+                      </span>
+                      <span style={{ fontFamily: "Oswald", fontSize: 11, width: 38, textAlign: "right", color: C.dim }}>{Math.round(b.earned)}/{b.max}</span>
+                    </div>
+                  );
+                })}
+                <div style={{ fontSize: 9, color: C.dim, marginTop: 4, lineHeight: 1.6 }}>赤い項目が伸びしろ。目標値: 振り6.0 / 打点+38% / 引き90°以下 / 伸び170° / 沈み110°以下 / 跳+25%</div>
+              </div>
+            )}
             {reps.length === 0 ? (
               <div style={{ fontSize: 12, color: C.dim }}>カメラか動画を開始してスイングすると、自動で1本ずつ検出・採点されます。</div>
             ) : (<>
@@ -1937,24 +1965,31 @@ export default function MomentumCoach() {
                 <div style={{ fontSize: 11, color: C.warn, fontWeight: 800, marginBottom: 8 }}>📊 「{activeRef.label}」との比較</div>
                 {!repAvg ? (
                   <div style={{ fontSize: 11, color: C.dim }}>スイングを検出すると差分が表示されます。</div>
-                ) : (
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, textAlign: "center" }}>
-                    {[
-                      ["打点", (repAvg.hit - activeRef.hit) * 100, "%"],
-                      ["肘", repAvg.elbow - activeRef.elbow, "°"],
-                      ["膝", repAvg.knee - activeRef.knee, "°", true],
-                      ["跳躍", (repAvg.jump - activeRef.jump) * 100, "%"],
-                    ].map(([lbl, d, unit, lowerBetter]) => {
-                      const good = lowerBetter ? d <= 0 : d >= 0;
-                      return (
-                        <div key={lbl} style={{ background: "#161E33", borderRadius: 12, padding: "8px 4px" }}>
-                          <div style={{ fontFamily: "Oswald", fontSize: 16, color: good ? C.ok : C.them }}>{d >= 0 ? "+" : ""}{Math.round(d)}{unit}</div>
-                          <div style={{ fontSize: 9, color: C.dim }}>{lbl}</div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
+                ) : (() => {
+                  // 振り・引きはお手本側にも値がある時だけ比較(プリセットは未保持なので自動的に4項目)
+                  const rows = [
+                    activeRef.speed != null && ["振り", repAvg.speed - activeRef.speed, "", false],
+                    ["打点", (repAvg.hit - activeRef.hit) * 100, "%", false],
+                    activeRef.cock != null && ["引き", repAvg.cock - activeRef.cock, "°", true],
+                    ["肘", repAvg.elbow - activeRef.elbow, "°", false],
+                    ["膝", repAvg.knee - activeRef.knee, "°", true],
+                    ["跳躍", (repAvg.jump - activeRef.jump) * 100, "%", false],
+                  ].filter(Boolean);
+                  return (
+                    <div style={{ display: "grid", gridTemplateColumns: `repeat(${rows.length <= 4 ? rows.length : 3}, 1fr)`, gap: 8, textAlign: "center" }}>
+                      {rows.map(([lbl, d, unit, lowerBetter]) => {
+                        const good = lowerBetter ? d <= 0 : d >= 0;
+                        const show = unit === "" ? (d >= 0 ? "+" : "") + d.toFixed(1) : (d >= 0 ? "+" : "") + Math.round(d) + unit;
+                        return (
+                          <div key={lbl} style={{ background: "#161E33", borderRadius: 12, padding: "8px 4px" }}>
+                            <div style={{ fontFamily: "Oswald", fontSize: 16, color: good ? C.ok : C.them }}>{show}</div>
+                            <div style={{ fontSize: 9, color: C.dim }}>{lbl}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
               </div>
             )}
           </div>
