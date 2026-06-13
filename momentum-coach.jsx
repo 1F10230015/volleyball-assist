@@ -591,6 +591,7 @@ export default function MomentumCoach() {
   const [learnApply, setLearnApply] = useState(true);
   const [apiKey, setApiKey] = useState(() => { try { return localStorage.getItem(API_KEY_KEY) || ""; } catch { return ""; } });
   const [subbing, setSubbing] = useState(null); // 選手交代フロー {team?, out?, name?}
+  const [forecastOpen, setForecastOpen] = useState(false); // 予報パネルの手動展開
   const [selSlot, setSelSlot] = useState(null);
   const [editNames, setEditNames] = useState({ us: false, them: false });
   const [scoutRep, setScoutRep] = useState(null);
@@ -834,7 +835,7 @@ export default function MomentumCoach() {
   const resetForNewSet = () => {
     setLog([]); setVerdicts([]); setTimeoutsLeft(MAX_TIMEOUTS);
     judgedAt.current = -1; setVerdict(null); setAlertS(null);
-    setSetNo(n => n + 1); setSetEnd(null);
+    setSetNo(n => n + 1); setSetEnd(null); setForecastOpen(false);
     setFirstServe(f => f === "us" ? "them" : "us");
   };
   const nextSet = () => { archiveCurrent(setEnd.winner); resetForNewSet(); setMode("setup"); };
@@ -857,7 +858,7 @@ export default function MomentumCoach() {
     setLog([]); setVerdicts([]); setArchived([]); setSetsWon({ us: 0, them: 0 });
     setSetNo(1); setTimeoutsLeft(MAX_TIMEOUTS); setSetEnd(null);
     judgedAt.current = -1; setVerdict(null); setAlertS(null);
-    setMenu(null); setStory(null); setSelSlot(null); setMode("home");
+    setMenu(null); setStory(null); setSelSlot(null); setSubbing(null); setForecastOpen(false); setMode("home");
   };
 
   const deleteEntry = id => setLearnEntries(es => { const n = es.filter(e => e.id !== id); saveLearnEntries(n); return n; });
@@ -2224,8 +2225,26 @@ export default function MomentumCoach() {
             </div>
           )}
 
-          {/* ★モメンタム予報(崩れの予知 + 着地点予測コーン) */}
+          {/* ★モメンタム予報: 平常時はスリム、崩れの兆候が出たら自動で展開(タップでも開閉可) */}
           {forecast && (() => {
+            const big = forecast.risk >= 35 || forecast.trailing >= 2 || forecastOpen;
+            const storm = forecast.risk >= 78;
+            if (!big) {
+              // コンパクト表示: 1行。タップで詳細を開ける
+              return (
+                <button onClick={() => setForecastOpen(true)}
+                  style={{ ...panel, padding: "10px 14px", display: "flex", alignItems: "center", gap: 10, width: "100%", cursor: "pointer", textAlign: "left", color: C.txt, fontFamily: "'Noto Sans JP', sans-serif", border: `1px solid ${forecast.level.c}33` }}>
+                  <span style={{ fontSize: 20 }}>{forecast.level.i}</span>
+                  <span style={{ fontSize: 12, fontWeight: 900 }}>🌦 モメンタム予報</span>
+                  <span style={{ fontSize: 12, fontWeight: 900, color: forecast.level.c }}>{forecast.level.t}</span>
+                  <span style={{ flex: 1, height: 6, borderRadius: 3, background: "#0A0F1E", overflow: "hidden" }}>
+                    <span style={{ display: "block", height: "100%", width: `${forecast.risk}%`, background: forecast.level.c, borderRadius: 3, transition: "width .5s" }} />
+                  </span>
+                  <span style={{ fontFamily: "Oswald", fontSize: 14, color: forecast.level.c }}>{forecast.risk}%</span>
+                  <span style={{ fontSize: 13, color: C.dim }}>›</span>
+                </button>
+              );
+            }
             const cw = 300, ch = 86, padX = 10, padTop = 10;
             const N = cone.length - 1;
             const xs = i => padX + (i / N) * (cw - 2 * padX);
@@ -2234,9 +2253,8 @@ export default function MomentumCoach() {
             const band = [...cone.map((p, i) => `${xs(i)},${ys(p.p90)}`), ...cone.map((p, i) => `${xs(i)},${ys(p.p10)}`).reverse()];
             const mid = cone.map((p, i) => `${i ? "L" : "M"}${xs(i)},${ys(p.p50)}`).join(" ");
             const end = cone[N];
-            const storm = forecast.risk >= 78;
             return (
-              <div style={{ ...panel, border: `1px solid ${forecast.level.c}55`, animation: storm ? "siren 1.4s infinite" : "none" }}>
+              <div style={{ ...panel, border: `1px solid ${forecast.level.c}55`, animation: storm ? "siren 1.4s infinite" : "slideUp .25s" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                   <div style={{ fontSize: 38, animation: forecast.risk >= 60 ? "pulse 1.2s infinite" : "floatBall 3s ease-in-out infinite" }}>{forecast.level.i}</div>
                   <div style={{ flex: 1 }}>
@@ -2249,6 +2267,10 @@ export default function MomentumCoach() {
                       <span style={{ marginLeft: 8 }}>{forecast.learnedHit ? "🧠 学習データ反映" : "定石ベース"}</span>
                     </div>
                   </div>
+                  {forecastOpen && forecast.risk < 35 && forecast.trailing < 2 && (
+                    <button onClick={() => setForecastOpen(false)} title="折りたたむ"
+                      style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", fontSize: 16, fontWeight: 900, padding: 4 }}>▴</button>
+                  )}
                 </div>
                 <div style={{ height: 8, borderRadius: 4, background: "#0A0F1E", overflow: "hidden", margin: "8px 0" }}>
                   <div style={{ height: "100%", width: `${forecast.risk}%`, background: forecast.level.c, borderRadius: 4, transition: "width .5s, background .5s" }} />
