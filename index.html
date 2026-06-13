@@ -22,7 +22,12 @@
   const REACT_URL = "https://esm.sh/react@18.3.1";
   const DOM_URL = "https://esm.sh/react-dom@18.3.1/client";
   try {
-    let src = await (await fetch("./momentum-coach.jsx", { cache: "no-store" })).text();
+    // アプリ本体は絶対URLで取得(PWA全画面起動など相対パスの基準が不安定な文脈でも確実に解決する)
+    let base;
+    try { base = new URL(".", document.baseURI || location.href).href; }
+    catch { base = "https://1f10230015.github.io/volleyball-assist/"; }
+    const jsxUrl = base + "momentum-coach.jsx";
+    let src = await (await fetch(jsxUrl, { cache: "no-store" })).text();
     src = src.replace('from "react"', `from "${REACT_URL}"`);
     const out = Babel.transform(src, { presets: [["react", { runtime: "automatic", importSource: REACT_URL }]], filename: "momentum-coach.jsx" }).code;
     const mod = await import(URL.createObjectURL(new Blob([out], { type: "text/javascript" })));

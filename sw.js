@@ -2,7 +2,7 @@
 // アプリシェルをキャッシュしてオフライン起動を可能にする。
 // 同一オリジンのファイルは network-first(常に最新を取得、失敗時のみキャッシュ)なので
 // 頻繁な更新もそのまま反映される。React/Babel/MediaPipe等のCDNはネットワーク任せ。
-const CACHE = "vbmc-v1";
+const CACHE = "vbmc-v2";
 const ASSETS = [
   "./", "./index.html", "./momentum-coach.jsx", "./manifest.json",
   "./icon-192.png", "./icon-512.png", "./apple-touch-icon.png",
