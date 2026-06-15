@@ -463,6 +463,9 @@ const KEY_VIS_POINTS = [0, 15, 16, 25, 26, 27, 28];
 const SMOOTH_ALPHA = 0.5;
 const SMOOTH_ALPHA_FAST = 0.8;
 const FAST_POINTS = new Set([13, 14, 15, 16]); // 肘・手首
+// 1回のスパイク中、助走バックスイングと打撃が別々に検出されるのを防ぐ統合窓(ms)。
+// この時間内に起きた複数の検出はまとめ、最も高く手が到達した1本(=ボールを打つ瞬間)だけ採用する。
+const SWING_MERGE_MS = 900;
 const FORM_REF_KEY = "vbmc_form_ref_v1";
 const POSE_LINKS = [[11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24], [23, 25], [25, 27], [24, 26], [26, 28]];
 
@@ -926,6 +929,9 @@ export default function MomentumCoach() {
   const stopForm = () => {
     runningRef.current = false;
     cancelAnimationFrame(rafRef.current);
+    // 確定前に溜まっている検出があれば最後に記録(動画終了直後の打撃を取りこぼさない)
+    const fs = frameRef.current;
+    if (fs && fs.pending) { const p = fs.pending; fs.pending = null; setReps(rs => [...rs, { ...p, score: repScore(p), t: Date.now() }].slice(-30)); }
     streamRef.current?.getTracks().forEach(t => t.stop());
     streamRef.current = null;
     const v = videoRef.current;
@@ -990,6 +996,11 @@ export default function MomentumCoach() {
       fs.fps = fs.fps ? fs.fps * 0.9 + inst * 0.1 : inst;
     }
     fs.lastT = tMs;
+    // ★検出クラスタの確定: 統合窓を過ぎて次の動作が来なければ、溜めていた代表1本を記録
+    if (fs.pending && tMs - fs.pendingT > SWING_MERGE_MS) {
+      const p = fs.pending; fs.pending = null;
+      setReps(rs => [...rs, { ...p, score: repScore(p), t: Date.now() }].slice(-30));
+    }
     // ★EMA平滑化: ジッタ(骨格のブレ)による誤計測・誤検出を抑える
     if (!fs.smooth) fs.smooth = lm.map(p => ({ x: p.x, y: p.y }));
     else lm.forEach((p, i) => {
@@ -1075,7 +1086,10 @@ export default function MomentumCoach() {
         // ★誤検出フィルタ: 高さ(打点に届いた)+速度(振った)+持続時間(瞬間ノイズでない)を満たすものだけ採用
         // → 「ただ手を挙げただけ」「一瞬の検出ブレ」はカウントしない。速度1.2は低fps端末でも本物のスイングを通す値
         if (r.maxWristH > 0.10 && r.maxSpeed >= 1.2 && tMs - r.startT >= 120) {
-          setReps(rs => [...rs, { ...r, score: repScore(r), t: Date.now() }].slice(-30));
+          // 統合窓内に複数検出されたら、最も高く到達した1本(=ボールを打つ瞬間)だけを代表に残す。
+          // これで助走のバックスイングは別カウントされず、打撃の1本だけが採点される。
+          if (!fs.pending || r.maxWristH > fs.pending.maxWristH) fs.pending = r;
+          fs.pendingT = tMs;
         }
         fs.rep = null;
       }
@@ -1105,14 +1119,13 @@ export default function MomentumCoach() {
         const f = file || lastFileRef.current;
         if (!f) { setFormErr("再生する動画がありません。動画ファイルを選んでください。"); setFormStatus("idle"); return; }
         v.srcObject = null; v.src = URL.createObjectURL(f); setMirror(false);
-        setReps([]); setFormAdvice(null); // 動画解析はその1本の結果に。再測定で重複しないようリセット
       }
       setFormSource(source);
       v.onended = source === "file" ? () => stopForm() : null; // 動画終了で自動停止
       await v.play();
       // ★動画ファイルはスロー再生で解析(1コマあたりの推論時間を確保して取りこぼしを防ぐ)
       v.playbackRate = source === "file" ? 0.6 : 1.0;
-      frameRef.current = { state: "idle", lastRepAt: -1e9, hipBase: null, kneeWin: [], elbowWin: [], prevWrist: null, prevT: 0, rep: null, frame: 0, smooth: null, smoothW: null, lastQ: null, fps: 0, lastT: null, bodyH2d: null, scaleW: null, selCenter: null, lastN: 0 };
+      frameRef.current = { state: "idle", lastRepAt: -1e9, hipBase: null, kneeWin: [], elbowWin: [], prevWrist: null, prevT: 0, rep: null, frame: 0, smooth: null, smoothW: null, lastQ: null, fps: 0, lastT: null, bodyH2d: null, scaleW: null, selCenter: null, lastN: 0, pending: null, pendingT: 0 };
       tapRef.current = null;
       runningRef.current = true;
       setTrackQuality(null);
