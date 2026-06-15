@@ -627,6 +627,8 @@ export default function MomentumCoach() {
   const runningRef = useRef(false);
   const streamRef = useRef(null);
   const frameRef = useRef(null);
+  const lastFileRef = useRef(null); // 直前に解析した動画(ボタン一つで再測定)
+  const [hasLastFile, setHasLastFile] = useState(false);
   const [setNo, setSetNo] = useState(1);
   const [setsWon, setSetsWon] = useState({ us: 0, them: 0 });
   const [archived, setArchived] = useState([]);
@@ -1099,7 +1101,11 @@ export default function MomentumCoach() {
         v.srcObject = stream; streamRef.current = stream;
         setMirror(facing === "user"); // 内カメラのみ鏡映しにする
       } else {
-        v.srcObject = null; v.src = URL.createObjectURL(file); setMirror(false);
+        if (file) { lastFileRef.current = file; setHasLastFile(true); } // 再測定用に直前の動画を保持
+        const f = file || lastFileRef.current;
+        if (!f) { setFormErr("再生する動画がありません。動画ファイルを選んでください。"); setFormStatus("idle"); return; }
+        v.srcObject = null; v.src = URL.createObjectURL(f); setMirror(false);
+        setReps([]); setFormAdvice(null); // 動画解析はその1本の結果に。再測定で重複しないようリセット
       }
       setFormSource(source);
       v.onended = source === "file" ? () => stopForm() : null; // 動画終了で自動停止
@@ -1203,6 +1209,8 @@ export default function MomentumCoach() {
   const activeRef = formRefs.find(r => r.enabled && r.kind === formKind);
 
   const jumpCmOf = j => heightCm ? ` (約${Math.round(j * +heightCm * 0.85)}cm)` : "";
+  const deleteRep = t => setReps(rs => rs.filter(r => r.t !== t)); // 誤検出スイングの個別削除
+  const remeasure = () => { if (lastFileRef.current) startForm("file", lastFileRef.current); };
 
   const genFormAdvice = async () => {
     if (!repAvg) return;
@@ -1848,6 +1856,12 @@ export default function MomentumCoach() {
                   onChange={e => { const f = e.target.files?.[0]; if (f) startForm("file", f); e.target.value = ""; }} />
               </label>
             </div>
+            {hasLastFile && formStatus !== "running" && (
+              <button style={btn("linear-gradient(160deg, #33405f, #232d47)", { fontSize: 13, padding: "12px 6px", marginTop: 8 })}
+                onClick={remeasure} disabled={formStatus === "loading"}>
+                🔁 同じ動画をもう一度測定
+              </button>
+            )}
             {formStatus === "running" && (
               <div style={{ display: "grid", gridTemplateColumns: formSource === "camera" ? "1fr 1fr" : "1fr", gap: 8, marginTop: 8 }}>
                 {formSource === "camera" && (
@@ -1915,9 +1929,12 @@ export default function MomentumCoach() {
                 <div key={r.t} style={{ display: "flex", gap: 8, fontSize: 11, padding: "6px 0", borderTop: i ? `1px solid ${C.line}` : "none", alignItems: "center" }}>
                   <span style={{ fontFamily: "Oswald", color: C.dim, width: 24 }}>#{reps.length - i}</span>
                   <span style={{ fontFamily: "Oswald", fontSize: 16, width: 44, color: r.score >= 70 ? C.ok : r.score >= 45 ? C.warn : C.them }}>{r.score}点</span>
-                  <span style={{ color: C.dim }}>振り{(r.maxSpeed ?? 0).toFixed(1)} / 打点+{Math.round(r.maxWristH * 100)}% / 引き{Math.round(r.minElbow ?? 150)}° / 伸び{Math.round(r.elbowAtMax)}° / 膝{Math.round(r.minKnee)}° / 跳{Math.round(r.maxJump * 100)}%{jumpCmOf(r.maxJump)}</span>
+                  <span style={{ flex: 1, color: C.dim }}>振り{(r.maxSpeed ?? 0).toFixed(1)} / 打点+{Math.round(r.maxWristH * 100)}% / 引き{Math.round(r.minElbow ?? 150)}° / 伸び{Math.round(r.elbowAtMax)}° / 膝{Math.round(r.minKnee)}° / 跳{Math.round(r.maxJump * 100)}%{jumpCmOf(r.maxJump)}</span>
+                  <button onClick={() => deleteRep(r.t)} title="この1本を削除(誤検出など)"
+                    style={{ background: "none", border: "none", color: C.them, cursor: "pointer", fontSize: 14, flexShrink: 0, padding: "0 2px" }}>🗑</button>
                 </div>
               ))}
+              {reps.length > 8 && <div style={{ fontSize: 10, color: C.dim, marginTop: 4 }}>…ほか{reps.length - 8}本(平均には全{reps.length}本を反映)</div>}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 10 }}>
                 <button style={btn("linear-gradient(160deg, #1f5e40, #174530)", { fontSize: 12, padding: "11px 6px", border: `1px solid ${C.ok}` })} onClick={addFormRef}>
                   ⭐ この平均を{formKind}のお手本に登録
