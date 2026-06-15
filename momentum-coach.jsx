@@ -523,7 +523,8 @@ function loadFormRefs() {
       // アプリ更新で増えたプリセットはOFF状態で自動追加(比較対象は勝手に変えない)
       const synced = stored.map(r => {
         const b = BUILTIN_REFS.find(x => x.id === r.id);
-        return b ? { ...b, enabled: r.enabled } : r;
+        // プリセットの計測値は最新に同期しつつ、ユーザーが変更した名前・ON/OFFは保持する
+        return b ? { ...b, enabled: r.enabled, label: r.label ?? b.label } : r;
       });
       const missing = BUILTIN_REFS.filter(b => !stored.some(r => r.id === b.id)).map(b => ({ ...b, enabled: false }));
       const merged = [...synced, ...missing];
@@ -632,6 +633,7 @@ export default function MomentumCoach() {
   const frameRef = useRef(null);
   const lastFileRef = useRef(null); // 直前に解析した動画(ボタン一つで再測定)
   const [hasLastFile, setHasLastFile] = useState(false);
+  const [editingRef, setEditingRef] = useState(null); // 名前編集中のお手本 {id, label}
   const [setNo, setSetNo] = useState(1);
   const [setsWon, setSetsWon] = useState({ us: 0, them: 0 });
   const [archived, setArchived] = useState([]);
@@ -1215,6 +1217,7 @@ export default function MomentumCoach() {
     ));
   });
   const deleteFormRef = id => setFormRefs(rs => persistRefs(rs.filter(r => r.id !== id)));
+  const renameFormRef = (id, label) => setFormRefs(rs => persistRefs(rs.map(r => r.id === id ? { ...r, label } : r)));
   const restorePresets = () => setFormRefs(rs =>
     persistRefs([...rs, ...BUILTIN_REFS.filter(b => !rs.some(r => r.id === b.id)).map(b => ({ ...b, enabled: false }))])
   );
@@ -1981,9 +1984,23 @@ export default function MomentumCoach() {
                   {r.kind === "スパイク" ? "💥" : "🎯"} {r.kind}
                 </span>
                 <span style={{ flex: 1, minWidth: 0 }}>
-                  <span style={{ fontWeight: 800, fontSize: 12 }}>{r.label}{r.n === "推定" && <span style={{ fontSize: 9, color: C.dim, fontWeight: 700 }}>(推定値)</span>}</span><br />
-                  <span style={{ color: C.dim, fontSize: 10 }}>打点+{Math.round(r.hit * 100)}% / 肘{Math.round(r.elbow)}° / 膝{Math.round(r.knee)}° / 跳{Math.round(r.jump * 100)}%</span>
+                  {editingRef?.id === r.id ? (
+                    <span style={{ display: "flex", gap: 6 }}>
+                      <input value={editingRef.label} onChange={e => setEditingRef({ id: r.id, label: e.target.value })} maxLength={20} autoFocus
+                        onKeyDown={e => { if (e.key === "Enter" && editingRef.label.trim()) { renameFormRef(r.id, editingRef.label.trim()); setEditingRef(null); } }}
+                        style={{ flex: 1, minWidth: 0, background: "#0A0F1E", border: `1px solid ${C.warn}`, borderRadius: 8, color: C.txt, padding: "6px 8px", fontSize: 12, fontWeight: 700, fontFamily: "'Noto Sans JP', sans-serif", outline: "none" }} />
+                      <button onClick={() => { if (editingRef.label.trim()) renameFormRef(r.id, editingRef.label.trim()); setEditingRef(null); }}
+                        style={{ background: C.ok, border: "none", color: "#fff", borderRadius: 8, padding: "0 10px", cursor: "pointer", fontWeight: 900, fontSize: 12, flexShrink: 0 }}>✓</button>
+                    </span>
+                  ) : (<>
+                    <span style={{ fontWeight: 800, fontSize: 12 }}>{r.label}{r.n === "推定" && <span style={{ fontSize: 9, color: C.dim, fontWeight: 700 }}>(推定値)</span>}</span><br />
+                    <span style={{ color: C.dim, fontSize: 10 }}>打点+{Math.round(r.hit * 100)}% / 肘{Math.round(r.elbow)}° / 膝{Math.round(r.knee)}° / 跳{Math.round(r.jump * 100)}%</span>
+                  </>)}
                 </span>
+                {editingRef?.id !== r.id && (
+                  <button onClick={() => setEditingRef({ id: r.id, label: r.label })} title="名前を変更"
+                    style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", fontSize: 13, flexShrink: 0 }}>✏</button>
+                )}
                 <button onClick={() => deleteFormRef(r.id)} style={{ background: "none", border: "none", color: C.them, cursor: "pointer", fontSize: 13, flexShrink: 0 }}>🗑</button>
               </div>
             ))}
