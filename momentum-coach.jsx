@@ -634,6 +634,11 @@ export default function MomentumCoach() {
   const lastFileRef = useRef(null); // 直前に解析した動画(ボタン一つで再測定)
   const [hasLastFile, setHasLastFile] = useState(false);
   const [editingRef, setEditingRef] = useState(null); // 名前編集中のお手本 {id, label}
+  const [dayStreak, setDayStreak] = useState(1); // 連続利用日数(ゲーミフィケーション)
+  const [teamName, setTeamName] = useState(() => { try { return localStorage.getItem("vbmc_team") || "マイチーム"; } catch { return "マイチーム"; } });
+  const [editingName, setEditingName] = useState(false);
+  const [matchTitle, setMatchTitle] = useState(""); // 記録する試合のタイトル(任意)
+  const [viewEntry, setViewEntry] = useState(null); // 学習データの詳細閲覧対象
   const [setNo, setSetNo] = useState(1);
   const [setsWon, setSetsWon] = useState({ us: 0, them: 0 });
   const [archived, setArchived] = useState([]);
@@ -688,6 +693,39 @@ export default function MomentumCoach() {
     () => (mode === "game" && !setEnd ? forecastCone(us, them, m, rot.serving, lp, 6) : null),
     [log.length, lp, mode, setEnd] // eslint-disable-line
   );
+
+  // ★連続利用日数を記録(初回マウント時)。利用日を localStorage に貯めて連続日数を算出
+  useEffect(() => {
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      let days = JSON.parse(localStorage.getItem("vbmc_days") || "[]");
+      if (!days.includes(today)) { days = [...days, today].slice(-90); localStorage.setItem("vbmc_days", JSON.stringify(days)); }
+      const set = new Set(days); let s = 0; const d = new Date();
+      for (; ;) { const k = d.toISOString().slice(0, 10); if (set.has(k)) { s++; d.setDate(d.getDate() - 1); } else break; }
+      setDayStreak(s || 1);
+    } catch { setDayStreak(1); }
+  }, []);
+
+  // ★プロフィール(ゲーミフィケーション): すべて実データ(記録試合・総ラリー・お手本・利用日)から算出
+  const profile = useMemo(() => {
+    const own = learnEntries.filter(e => e.source === "own").length;
+    const pro = learnEntries.filter(e => e.source === "pro").length;
+    const ralliesN = learned?.ralliesN || 0;
+    const myRefs = formRefs.filter(r => !r.builtin).length;
+    const exp = ralliesN + learnEntries.length * 60 + myRefs * 40;
+    const level = Math.floor(exp / 300) + 1;
+    const into = exp % 300, need = 300;
+    const badges = [
+      { id: "first", icon: "🎬", label: "初記録", got: learnEntries.length >= 1 },
+      { id: "collector", icon: "📚", label: "収集家", got: learnEntries.length >= 5 },
+      { id: "r100", icon: "💯", label: "100ラリー", got: ralliesN >= 100 },
+      { id: "scout", icon: "📺", label: "観戦者", got: pro >= 1 },
+      { id: "model", icon: "⭐", label: "お手本職人", got: myRefs >= 1 },
+      { id: "streak3", icon: "🔥", label: "3日継続", got: dayStreak >= 3 },
+    ];
+    return { own, pro, ralliesN, myRefs, exp, level, into, need, badges, got: badges.filter(b => b.got).length };
+  }, [learnEntries, formRefs, learned, dayStreak]);
+  const saveTeamName = v => { const t = v.trim() || "マイチーム"; setTeamName(t); try { localStorage.setItem("vbmc_team", t); } catch { /* noop */ } };
 
   const isDeuce = us >= setTarget - 1 && them >= setTarget - 1;
   const setPointUs = !setEnd && us >= setTarget - 1 && us - them >= 1;
@@ -856,15 +894,17 @@ export default function MomentumCoach() {
   // ★試合終了時、自動でAI学習データに保存(試合モード=own / 観戦モード=pro)
   const finishMatch = () => {
     const finalSets = [...archived, { log, verdicts, us, them, winner: setEnd.winner, setNo }];
+    const dateLabel = new Date().toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" });
+    const def = matchKind === "scout" ? `観戦記録 ${dateLabel}` : `試合 ${dateLabel}`;
     const entry = {
       id: Date.now(), savedAt: new Date().toISOString(),
       source: matchKind === "scout" ? "pro" : "own",
-      label: matchKind === "scout" ? "観戦学習記録" : "自チーム試合",
+      label: matchTitle.trim() || def,
       sets: finalSets.map(s => ({ setNo: s.setNo, us: s.us, them: s.them, winner: s.winner, log: s.log })),
       roster, lineup,
     };
     setLearnEntries(es => { const n = [...es, entry]; saveLearnEntries(n); return n; });
-    archiveCurrent(setEnd.winner); resetForNewSet(); setMode("report");
+    setMatchTitle(""); archiveCurrent(setEnd.winner); resetForNewSet(); setMode("report");
   };
   const undoFromSetEnd = () => { setSetEnd(null); undo(); };
 
@@ -872,7 +912,7 @@ export default function MomentumCoach() {
     setLog([]); setVerdicts([]); setArchived([]); setSetsWon({ us: 0, them: 0 });
     setSetNo(1); setTimeoutsLeft(MAX_TIMEOUTS); setSetEnd(null);
     judgedAt.current = -1; setVerdict(null); setAlertS(null);
-    setMenu(null); setStory(null); setSelSlot(null); setSubbing(null); setForecastOpen(false); setMode("home");
+    setMenu(null); setStory(null); setSelSlot(null); setSubbing(null); setForecastOpen(false); setMatchTitle(""); setMode("home");
   };
 
   const deleteEntry = id => setLearnEntries(es => { const n = es.filter(e => e.id !== id); saveLearnEntries(n); return n; });
@@ -1387,7 +1427,7 @@ export default function MomentumCoach() {
               <text x={px(idx + 1)} y={py(ser[idx + 1]) + 3} textAnchor="middle" fontSize="7" fontWeight="bold" fill={team === "them" ? "#fff" : "#1a1a1a"}>T</text>
             </g>
           ))}
-          {s.verdicts.filter(v => v.action === "ignored").map((v, i) => (
+          {(s.verdicts || []).filter(v => v.action === "ignored").map((v, i) => (
             <circle key={i} cx={px(v.atIndex)} cy={py(ser[v.atIndex] ?? 0)} r="5" fill="none" stroke={C.them} strokeWidth="2" />
           ))}
         </svg>
@@ -1589,18 +1629,66 @@ export default function MomentumCoach() {
       <div style={{ width: "100%", maxWidth: 430, padding: "16px 16px 24px", display: "flex", flexDirection: "column", gap: 14, position: "relative", zIndex: 10 }}>
 
         {mode === "home" ? (<>
-          {/* ============ ホーム画面 ============ */}
-          <div style={{ textAlign: "center", marginTop: 20 }}>
-            <div style={{ fontSize: 48, animation: "floatBall 2.4s ease-in-out infinite" }}>🏐</div>
-            <div style={{ fontFamily: "'Baloo 2'", fontSize: 27, fontWeight: 700, letterSpacing: 3 }}>MOMENTUM COACH AI</div>
-            <div style={{ fontSize: 12, color: C.dim, fontWeight: 700, marginTop: 6 }}>流れを読むAIが、ベンチワークを変える</div>
+          {/* ============ ホーム画面(プロフィール+育成) ============ */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 6 }}>
+            <span style={{ fontSize: 22 }}>🏐</span>
+            <span style={{ fontFamily: "'Baloo 2'", fontSize: 18, fontWeight: 800, letterSpacing: 1, color: C.txt }}>MOMENTUM COACH AI</span>
           </div>
 
-          {learned && (
-            <div style={{ textAlign: "center", fontSize: 11, fontWeight: 800, color: learnApply ? C.ok : C.dim }}>
-              🧠 学習済み: {learned.matches}試合 / {learned.ralliesN}ラリー{learnApply ? "(AIに適用中)" : "(適用OFF)"}
+          {/* プロフィール(レベル・EXP・連続日数) */}
+          <div style={{ borderRadius: 24, padding: 16, color: "#fff", background: "linear-gradient(135deg, #4C84FF, #7B68EE)", boxShadow: "0 14px 30px rgba(76,99,230,.28)", display: "flex", gap: 14, alignItems: "center" }}>
+            <div style={{ position: "relative", width: 62, height: 62, flexShrink: 0 }}>
+              <div style={{ position: "absolute", inset: 0, borderRadius: "50%", background: `conic-gradient(#FFE36E ${Math.round(profile.into / profile.need * 100)}%, rgba(255,255,255,.28) 0)` }} />
+              <div style={{ position: "absolute", inset: 5, borderRadius: "50%", background: "rgba(255,255,255,.18)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 26 }}>🏐</div>
+              <div style={{ position: "absolute", bottom: -4, right: -4, fontSize: 10, fontWeight: 900, color: "#5A3B00", padding: "2px 7px", borderRadius: 999, background: "linear-gradient(135deg,#FFC83D,#FF9F2E)" }}>Lv.{profile.level}</div>
             </div>
-          )}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                {editingName ? (
+                  <input value={teamName} autoFocus onChange={e => setTeamName(e.target.value)} maxLength={12}
+                    onBlur={() => { saveTeamName(teamName); setEditingName(false); }}
+                    onKeyDown={e => { if (e.key === "Enter") { saveTeamName(teamName); setEditingName(false); } }}
+                    style={{ flex: 1, minWidth: 0, background: "rgba(255,255,255,.12)", border: "1px solid rgba(255,255,255,.3)", borderRadius: 8, color: "#fff", padding: "4px 8px", fontSize: 15, fontWeight: 800, fontFamily: "'M PLUS Rounded 1c', sans-serif", outline: "none" }} />
+                ) : (<>
+                  <span style={{ fontSize: 16, fontWeight: 900 }}>{teamName}</span>
+                  <button onClick={() => setEditingName(true)} aria-label="名前を変更" style={{ background: "none", border: "none", color: "rgba(255,255,255,.6)", cursor: "pointer", fontSize: 12, padding: 0 }}>✏</button>
+                </>)}
+                <span style={{ marginLeft: "auto", fontSize: 10, fontWeight: 900, padding: "2px 8px", borderRadius: 999, background: "rgba(255,107,107,.25)", color: "#FFC2C2", flexShrink: 0 }}>🔥 {dayStreak}日連続</span>
+              </div>
+              <div style={{ fontSize: 11, fontWeight: 700, opacity: .9, margin: "6px 0 4px" }}>
+                あと <b style={{ color: "#FFE36E" }}>{profile.need - profile.into} EXP</b> でLv.{profile.level + 1}
+              </div>
+              <div style={{ height: 8, borderRadius: 6, background: "rgba(255,255,255,.22)", overflow: "hidden" }}>
+                <div style={{ height: "100%", width: `${Math.round(profile.into / profile.need * 100)}%`, background: "linear-gradient(90deg,#FFE36E,#FFC83D)", borderRadius: 6, transition: "width .5s" }} />
+              </div>
+            </div>
+          </div>
+
+          {/* 統計(すべて実データ) */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+            {[["試合数", profile.own, C.us], ["お手本", profile.myRefs, C.warn], ["総ラリー", profile.ralliesN, C.ok]].map(([lbl, v, col]) => (
+              <div key={lbl} style={{ ...panel, padding: "12px 6px", textAlign: "center" }}>
+                <div style={{ fontFamily: "'Baloo 2'", fontSize: 22, color: col }}>{v}</div>
+                <div style={{ fontSize: 10, color: C.dim, fontWeight: 700 }}>{lbl}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* 実績バッジ */}
+          <div style={panel}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+              <span style={{ fontSize: 13, fontWeight: 900, color: C.txt }}>🏅 実績バッジ</span>
+              <span style={{ fontSize: 11, color: C.dim, fontWeight: 800 }}>{profile.got}/{profile.badges.length}</span>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
+              {profile.badges.map(b => (
+                <div key={b.id} style={{ textAlign: "center", padding: "8px 4px", borderRadius: 14, background: b.got ? "#FFF6E6" : C.surf, opacity: b.got ? 1 : .55 }}>
+                  <div style={{ fontSize: 22, filter: b.got ? "none" : "grayscale(1)" }}>{b.icon}</div>
+                  <div style={{ fontSize: 9, fontWeight: 800, color: b.got ? C.warnText : C.dim, marginTop: 2 }}>{b.label}</div>
+                </div>
+              ))}
+            </div>
+          </div>
 
           <HomeCard emoji="🏐" title="試合モード" accent={C.us} badge="🌦 崩れ予報つき"
             desc="試合をリアルタイム記録。AIがTOの取り時を判定し、勝率と流れを可視化。さらに『崩れの型』を予知して連続失点する前に警告する。"
@@ -1782,14 +1870,18 @@ export default function MomentumCoach() {
               <div style={{ fontSize: 11, color: C.dim }}>保存された試合はありません。</div>
             ) : learnEntries.map(e => (
               <div key={e.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, padding: "7px 0", borderTop: `1px solid ${C.line}` }}>
-                <span style={{ fontSize: 9, fontWeight: 900, padding: "3px 8px", borderRadius: 8, background: e.source === "own" ? `${C.us}22` : "#B66EFF22", color: e.source === "own" ? C.us : "#B66EFF" }}>
-                  {e.source === "own" ? "自チーム" : "外部"}
-                </span>
-                <span style={{ flex: 1, fontWeight: 700 }}>{e.label}</span>
-                <span style={{ color: C.dim, fontSize: 10 }}>{(e.sets || []).map(s => `${s.us}-${s.them}`).join(" / ")}</span>
-                <button onClick={() => deleteEntry(e.id)} style={{ background: "none", border: "none", color: C.them, cursor: "pointer", fontSize: 13 }}>🗑</button>
+                <button onClick={() => setViewEntry(e)} style={{ flex: 1, display: "flex", alignItems: "center", gap: 8, background: "none", border: "none", cursor: "pointer", textAlign: "left", padding: 0, fontFamily: "'M PLUS Rounded 1c', sans-serif", minWidth: 0 }}>
+                  <span style={{ fontSize: 9, fontWeight: 900, padding: "3px 8px", borderRadius: 8, flexShrink: 0, background: e.source === "own" ? `${C.us}22` : "#B66EFF22", color: e.source === "own" ? C.us : "#7B5BE0" }}>
+                    {e.source === "own" ? "自チーム" : "外部"}
+                  </span>
+                  <span style={{ flex: 1, fontWeight: 800, color: C.txt, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.label}</span>
+                  <span style={{ color: C.dim, fontSize: 10, flexShrink: 0 }}>{(e.sets || []).map(s => `${s.us}-${s.them}`).join(" / ")}</span>
+                  <span style={{ color: C.us, fontSize: 14, flexShrink: 0 }}>›</span>
+                </button>
+                <button onClick={() => deleteEntry(e.id)} style={{ background: "none", border: "none", color: C.them, cursor: "pointer", fontSize: 13, flexShrink: 0 }}>🗑</button>
               </div>
             ))}
+            <div style={{ fontSize: 10, color: C.dim, marginTop: 6 }}>各記録をタップすると、スコア・流れ・得点源などの詳細を見られます(試合モードの記録もここに入ります)。</div>
             <div style={{ fontSize: 10, color: C.dim, marginTop: 8, lineHeight: 1.7 }}>
               インポート形式: このアプリの「試合データをエクスポート」JSON、または学習バンドルJSON。別端末で春高等を記録→エクスポート→ここで取り込み、の運用ができます。
             </div>
@@ -2075,6 +2167,16 @@ export default function MomentumCoach() {
           <div style={{ fontSize: 12, color: C.dim, lineHeight: 1.7 }}>
             デフォルトは<b style={{ color: C.txt }}>対角配置</b>(P1-P4/P2-P5/P3-P6: レフト⇔レフト、センター⇔センター、セッター⇔ライト)。カードを2枚タップすると入れ替えできます。P1が最初のサーバーです。
           </div>
+
+          {/* ★試合タイトル(SET1のみ。記録時の名前になる) */}
+          {setNo === 1 && archived.length === 0 && (
+            <div style={panel}>
+              <div style={{ fontSize: 12, color: C.dim, fontWeight: 800, marginBottom: 8 }}>📝 試合名(任意 — 記録の名前になります)</div>
+              <input value={matchTitle} onChange={e => setMatchTitle(e.target.value)} maxLength={24}
+                placeholder={matchKind === "scout" ? "例: 春高決勝 ○○高 vs △△高" : "例: 練習試合 vs ○○中"}
+                style={{ width: "100%", boxSizing: "border-box", background: C.surf, border: `1px solid ${C.line}`, borderRadius: 12, color: C.txt, padding: "11px 12px", fontSize: 14, fontWeight: 700, fontFamily: "'M PLUS Rounded 1c', sans-serif", outline: "none" }} />
+            </div>
+          )}
 
           <div style={panel}>
             <div style={{ fontSize: 12, color: C.dim, fontWeight: 800, marginBottom: 8 }}>最初のサーブ権</div>
@@ -2706,6 +2808,86 @@ export default function MomentumCoach() {
             <button style={{ marginTop: 26, background: "#1a1a1a", color: "#fff", border: "none", borderRadius: 16, padding: "14px 40px", fontSize: 16, fontWeight: 800, cursor: "pointer" }} onClick={() => setTimeoutS(null)}>試合に戻る →</button>
           </div>
         )}
+
+        {/* ===== 学習データの詳細閲覧 ===== */}
+        {viewEntry && (() => {
+          const e = viewEntry;
+          const ros = e.roster;
+          const lab = t => { const p = ros?.[t.team]?.[t.idx]; return p ? `${t.team === "them" ? "相手" : ""}${p.pos}・${p.name}` : `${t.team === "them" ? "相手" : "自"}選手`; };
+          const allR = (e.sets || []).flatMap(s => (s.log || []).filter(r => r.type === "rally"));
+          const tos = (e.sets || []).flatMap(s => (s.log || []).filter(r => r.type === "timeout")).length;
+          const subs = (e.sets || []).flatMap(s => (s.log || []).filter(r => r.type === "sub")).length;
+          const winBy = {}, lossBy = {};
+          allR.forEach(r => { const k = `${r.target.team}-${r.target.idx}`; if (r.e === 1 && r.target.team === "us") winBy[k] = (winBy[k] || 0) + 1; if (r.e === -1) lossBy[k] = (lossBy[k] || 0) + 1; });
+          const k2t = k => { const [team, idx] = k.split("-"); return { team, idx: +idx }; };
+          const topWinE = Object.entries(winBy).sort((a, b) => b[1] - a[1]).slice(0, 3);
+          const topLossE = Object.entries(lossBy).sort((a, b) => b[1] - a[1]).slice(0, 3);
+          const setsWonUs = (e.sets || []).filter(s => s.winner === "us").length;
+          const setsWonThem = (e.sets || []).filter(s => s.winner === "them").length;
+          return (
+            <div style={{ position: "fixed", inset: 0, background: "rgba(20,28,50,.55)", zIndex: 58, display: "flex", alignItems: "flex-end", justifyContent: "center" }} onClick={() => setViewEntry(null)}>
+              <div onClick={ev => ev.stopPropagation()} style={{ width: "100%", maxWidth: 430, maxHeight: "90vh", overflowY: "auto", background: "linear-gradient(180deg,#EEF3FC,#F6F8FD)", borderRadius: "26px 26px 0 0", padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontSize: 9, fontWeight: 900, padding: "3px 8px", borderRadius: 8, background: e.source === "own" ? `${C.us}22` : "#B66EFF22", color: e.source === "own" ? C.us : "#7B5BE0" }}>{e.source === "own" ? "自チーム" : "外部"}</span>
+                      <span style={{ fontSize: 16, fontWeight: 900, color: C.txt, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.label}</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: C.dim, fontWeight: 700, marginTop: 3 }}>
+                      {e.savedAt ? new Date(e.savedAt).toLocaleString("ja-JP", { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}
+                    </div>
+                  </div>
+                  <button onClick={() => setViewEntry(null)} aria-label="閉じる" style={{ background: "#fff", border: `1px solid ${C.line}`, color: C.dim, borderRadius: 12, padding: "6px 12px", cursor: "pointer", fontWeight: 800, fontSize: 14, flexShrink: 0 }}>✕</button>
+                </div>
+
+                <div style={{ ...panel, textAlign: "center" }}>
+                  <div style={{ fontSize: 11, color: C.dim, fontWeight: 800 }}>セットカウント</div>
+                  <div style={{ fontFamily: "'Baloo 2'", fontSize: 36, fontWeight: 800 }}>
+                    <span style={{ color: C.us }}>{setsWonUs}</span><span style={{ color: C.dim }}> - </span><span style={{ color: C.them }}>{setsWonThem}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "center", gap: 14, fontSize: 11, color: C.dim, fontWeight: 700, marginTop: 4 }}>
+                    <span>🏐 {allR.length}ラリー</span><span>⏱ TO {tos}</span><span>🔄 交代 {subs}</span>
+                  </div>
+                </div>
+
+                <div style={panel}>
+                  <div style={{ fontSize: 12, color: C.dim, fontWeight: 800, marginBottom: 8 }}>📈 セット別の流れ(モメンタム/勝率)</div>
+                  {(e.sets || []).map((s, i) => <SetChart key={i} s={s} label={`SET ${s.setNo || i + 1}`} />)}
+                </div>
+
+                {(topWinE.length > 0 || topLossE.length > 0) && (
+                  <div style={panel}>
+                    <div style={{ fontSize: 12, color: C.dim, fontWeight: 800, marginBottom: 8 }}>🧍 選手別</div>
+                    {topWinE.length > 0 && (
+                      <div style={{ fontSize: 12, lineHeight: 1.9 }}>
+                        <b style={{ color: C.us }}>🌟 得点源:</b> {topWinE.map(([k, v]) => `${lab(k2t(k))} ${v}点`).join(" / ")}
+                      </div>
+                    )}
+                    {topLossE.length > 0 && (
+                      <div style={{ fontSize: 12, lineHeight: 1.9 }}>
+                        <b style={{ color: C.them }}>⚠ 失点元:</b> {topLossE.map(([k, v]) => `${lab(k2t(k))} ${v}本`).join(" / ")}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {ros?.us && (
+                  <div style={panel}>
+                    <div style={{ fontSize: 12, color: C.dim, fontWeight: 800, marginBottom: 8 }}>👥 出場選手({e.source === "own" ? "自チーム" : "注目チーム"})</div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                      {ros.us.map((p, i) => (
+                        <span key={i} style={{ fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 10, background: C.surf, color: C.txt }}>
+                          <span style={{ color: posColor(p.pos), fontWeight: 900 }}>{p.pos}</span> {p.name}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <button style={btn(C.surf, { color: C.txt, fontSize: 13, padding: "12px 8px" })} onClick={() => setViewEntry(null)}>閉じる</button>
+              </div>
+            </div>
+          );
+        })()}
       </div>
     </div>
   );
