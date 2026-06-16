@@ -1342,14 +1342,15 @@ export default function MomentumCoach() {
   };
 
   const heat = Math.max(-1, Math.min(1, m / M_MAX));
-  const C = { us: "#3D8BFF", them: "#FF4A3D", warn: "#FFC83D", txt: "#EAF0FF", dim: "#8A96B8", line: "#2A3450", ok: "#46d68c" };
-  const auraColor = heat < 0 ? `rgba(255,74,61,${Math.min(.4, -heat * .45)})` : `rgba(61,139,255,${Math.min(.4, heat * .45)})`;
+  // 明るい・柔らかいテーマ。surf=ネスト面、ink/sub=文字色
+  const C = { us: "#4C84FF", them: "#FF6B6B", warn: "#FF9F2E", warnText: "#C57F12", txt: "#1B2440", dim: "#7E8AA6", line: "#E7ECF5", ok: "#2FBF8F", surf: "#EEF2FA" };
+  const auraColor = heat < 0 ? `rgba(255,107,107,${Math.min(.22, -heat * .26)})` : `rgba(76,132,255,${Math.min(.22, heat * .26)})`;
   const threatColor = threatPct < 45 ? C.ok : threatPct < 70 ? C.warn : C.them;
   const threatLabel = threatPct < 45 ? "平常" : threatPct < 70 ? "注視" : "危険";
-  const panel = { background: "linear-gradient(180deg, #161E33, #11182B)", borderRadius: 22, padding: 16, border: `1px solid ${C.line}` };
+  const panel = { background: "#FFFFFF", borderRadius: 24, padding: 16, border: `1px solid ${C.line}`, boxShadow: "0 8px 24px rgba(40,60,110,.07)" };
   const btn = (bg, extra = {}) => ({
     background: bg, color: "#fff", border: "none", borderRadius: 18,
-    fontFamily: "'Noto Sans JP', sans-serif", fontWeight: 800, cursor: "pointer",
+    fontFamily: "'M PLUS Rounded 1c', sans-serif", fontWeight: 800, cursor: "pointer",
     padding: "20px 8px", fontSize: 18, width: "100%", transition: "transform .08s", ...extra,
   });
   const press = e => { e.currentTarget.style.transform = "scale(.93)"; };
@@ -1520,10 +1521,10 @@ export default function MomentumCoach() {
               const p = roster[team][rosterIdx];
               return (
                 <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
-                  <span style={{ fontFamily: "Oswald", fontWeight: 700, fontSize: 13, width: 26, color: i === 0 ? C.warn : C.dim }}>P{i + 1}</span>
+                  <span style={{ fontFamily: "'Baloo 2'", fontWeight: 700, fontSize: 13, width: 26, color: i === 0 ? C.warn : C.dim }}>P{i + 1}</span>
                   <span style={{ fontSize: 10, fontWeight: 900, padding: "5px 0", borderRadius: 8, width: 56, textAlign: "center", background: `${posColor(p.pos)}22`, color: posColor(p.pos), border: `1px solid ${posColor(p.pos)}55` }}>{p.pos}</span>
                   <input value={p.name} onChange={e => editName(team, rosterIdx, e.target.value)} maxLength={10} placeholder="名前"
-                    style={{ flex: 1, minWidth: 0, background: "#0A0F1E", border: `1px solid ${C.line}`, borderRadius: 10, color: C.txt, padding: "9px 10px", fontSize: 13, fontWeight: 700, fontFamily: "'Noto Sans JP', sans-serif", outline: "none" }} />
+                    style={{ flex: 1, minWidth: 0, background: "#EEF2FA", border: `1px solid ${C.line}`, borderRadius: 10, color: C.txt, padding: "9px 10px", fontSize: 13, fontWeight: 700, fontFamily: "'M PLUS Rounded 1c', sans-serif", outline: "none" }} />
                 </div>
               );
             })}
@@ -1538,7 +1539,7 @@ export default function MomentumCoach() {
     <button onClick={onClick} onPointerDown={press} onPointerUp={release} onPointerLeave={release}
       style={{
         ...panel, display: "flex", alignItems: "center", gap: 14, cursor: "pointer", textAlign: "left",
-        width: "100%", color: C.txt, fontFamily: "'Noto Sans JP', sans-serif", transition: "transform .08s",
+        width: "100%", color: C.txt, fontFamily: "'M PLUS Rounded 1c', sans-serif", transition: "transform .08s",
         border: `1px solid ${accent}44`, boxShadow: `0 4px 18px ${accent}22`,
       }}>
       <span style={{ fontSize: 30 }}>{emoji}</span>
@@ -1555,13 +1556,13 @@ export default function MomentumCoach() {
 
   return (
     <div style={{
-      minHeight: "100vh", color: C.txt, fontFamily: "'Noto Sans JP', sans-serif",
+      minHeight: "100vh", color: C.txt, fontFamily: "'M PLUS Rounded 1c', sans-serif",
       display: "flex", justifyContent: "center", position: "relative", overflow: "hidden",
-      background: `radial-gradient(120% 90% at 50% -10%, ${auraColor}, transparent 60%), #0A0F1E`,
+      background: `radial-gradient(120% 90% at 50% -10%, ${auraColor}, transparent 55%), linear-gradient(180deg, #EEF3FC, #F6F8FD)`,
       transition: "background 1s", animation: shake ? "shake .45s" : "none",
     }}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@600;700&family=Noto+Sans+JP:wght@500;700;900&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;700;800&family=M+PLUS+Rounded+1c:wght@500;700;800;900&display=swap');
         @keyframes pop { 0%{transform:scale(1)} 35%{transform:scale(1.45) rotate(-4deg)} 100%{transform:scale(1)} }
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.45} }
         @keyframes shake { 0%,100%{transform:translateX(0)} 20%{transform:translateX(-8px)} 40%{transform:translateX(7px)} 60%{transform:translateX(-5px)} 80%{transform:translateX(3px)} }
@@ -1591,7 +1592,7 @@ export default function MomentumCoach() {
           {/* ============ ホーム画面 ============ */}
           <div style={{ textAlign: "center", marginTop: 20 }}>
             <div style={{ fontSize: 48, animation: "floatBall 2.4s ease-in-out infinite" }}>🏐</div>
-            <div style={{ fontFamily: "Oswald", fontSize: 27, fontWeight: 700, letterSpacing: 3 }}>MOMENTUM COACH AI</div>
+            <div style={{ fontFamily: "'Baloo 2'", fontSize: 27, fontWeight: 700, letterSpacing: 3 }}>MOMENTUM COACH AI</div>
             <div style={{ fontSize: 12, color: C.dim, fontWeight: 700, marginTop: 6 }}>流れを読むAIが、ベンチワークを変える</div>
           </div>
 
@@ -1637,8 +1638,8 @@ export default function MomentumCoach() {
                 ["観戦・外部", learnEntries.filter(e => e.source === "pro").length, "#B66EFF"],
                 ["総ラリー", learned?.ralliesN ?? 0, C.warn],
               ].map(([lbl, v, col]) => (
-                <div key={lbl} style={{ background: "#0A0F1E", borderRadius: 12, padding: 10 }}>
-                  <div style={{ fontFamily: "Oswald", fontSize: 24, color: col }}>{v}</div>
+                <div key={lbl} style={{ background: "#EEF2FA", borderRadius: 12, padding: 10 }}>
+                  <div style={{ fontFamily: "'Baloo 2'", fontSize: 24, color: col }}>{v}</div>
                   <div style={{ fontSize: 9, color: C.dim }}>{lbl}</div>
                 </div>
               ))}
@@ -1671,9 +1672,9 @@ export default function MomentumCoach() {
                 <div style={{ fontSize: 11, fontWeight: 900, color: C.dim, margin: "10px 0 6px" }}>🔄 サーブ順別 得失点差(自チーム)</div>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 6 }}>
                   {learned.byServer.map((s, i) => (
-                    <div key={i} style={{ background: "#0A0F1E", borderRadius: 10, padding: "8px 2px", textAlign: "center" }}>
+                    <div key={i} style={{ background: "#EEF2FA", borderRadius: 10, padding: "8px 2px", textAlign: "center" }}>
                       <div style={{ fontSize: 9, fontWeight: 900, color: C.dim }}>{roster.us[i].name}</div>
-                      <div style={{ fontFamily: "Oswald", fontSize: 14, color: s.won - s.lost >= 0 ? C.us : C.them }}>{s.won - s.lost >= 0 ? "+" : ""}{s.won - s.lost}</div>
+                      <div style={{ fontFamily: "'Baloo 2'", fontSize: 14, color: s.won - s.lost >= 0 ? C.us : C.them }}>{s.won - s.lost >= 0 ? "+" : ""}{s.won - s.lost}</div>
                     </div>
                   ))}
                 </div>
@@ -1698,12 +1699,12 @@ export default function MomentumCoach() {
               </div>
             ) : (<>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, textAlign: "center", marginBottom: 10 }}>
-                <div style={{ background: "#0A0F1E", borderRadius: 12, padding: 10 }}>
-                  <div style={{ fontFamily: "Oswald", fontSize: 24, color: C.them }}>{patterns.collapseCount}</div>
+                <div style={{ background: "#EEF2FA", borderRadius: 12, padding: 10 }}>
+                  <div style={{ fontFamily: "'Baloo 2'", fontSize: 24, color: C.them }}>{patterns.collapseCount}</div>
                   <div style={{ fontSize: 9, color: C.dim }}>検出した崩れ(3連続失点〜)</div>
                 </div>
-                <div style={{ background: "#0A0F1E", borderRadius: 12, padding: 10 }}>
-                  <div style={{ fontFamily: "Oswald", fontSize: 24, color: C.us }}>{patterns.comebackCount}</div>
+                <div style={{ background: "#EEF2FA", borderRadius: 12, padding: 10 }}>
+                  <div style={{ fontFamily: "'Baloo 2'", fontSize: 24, color: C.us }}>{patterns.comebackCount}</div>
                   <div style={{ fontSize: 9, color: C.dim }}>検出した反撃(3連続得点〜)</div>
                 </div>
               </div>
@@ -1712,10 +1713,10 @@ export default function MomentumCoach() {
                 {patterns.topTriggers.map((t, i) => (
                   <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, fontSize: 12 }}>
                     <span style={{ width: 90, fontWeight: 800 }}>{t.play}</span>
-                    <div style={{ flex: 1, height: 9, background: "#0A0F1E", borderRadius: 5, overflow: "hidden" }}>
+                    <div style={{ flex: 1, height: 9, background: "#EEF2FA", borderRadius: 5, overflow: "hidden" }}>
                       <div style={{ width: `${t.pct * 100}%`, height: "100%", background: C.them, borderRadius: 5 }} />
                     </div>
-                    <span style={{ fontFamily: "Oswald", width: 38, textAlign: "right", color: C.them }}>{Math.round(t.pct * 100)}%</span>
+                    <span style={{ fontFamily: "'Baloo 2'", width: 38, textAlign: "right", color: C.them }}>{Math.round(t.pct * 100)}%</span>
                   </div>
                 ))}
               </>)}
@@ -1744,7 +1745,7 @@ export default function MomentumCoach() {
                 <div style={{ fontSize: 16, fontWeight: 900, color: C.warn, marginBottom: 8 }}>『{scoutRep.title}』</div>
                 {scoutRep.points.map((p, i) => (
                   <div key={i} style={{ fontSize: 13, lineHeight: 1.8, display: "flex", gap: 8, marginBottom: 6 }}>
-                    <span style={{ fontFamily: "Oswald", color: C.warn }}>{i + 1}</span><span>{p}</span>
+                    <span style={{ fontFamily: "'Baloo 2'", color: C.warn }}>{i + 1}</span><span>{p}</span>
                   </div>
                 ))}
                 <button style={{ background: "none", border: `1px solid ${C.line}`, color: C.dim, borderRadius: 10, padding: "8px 14px", cursor: "pointer", fontWeight: 700, fontSize: 12, marginTop: 6 }} onClick={() => setScoutRep(null)}>↻ 再生成</button>
@@ -1761,7 +1762,7 @@ export default function MomentumCoach() {
               </span>
             </div>
             <input type="password" value={apiKey} onChange={e => saveApiKey(e.target.value.trim())} placeholder="sk-ant-..."
-              style={{ width: "100%", boxSizing: "border-box", background: "#0A0F1E", border: `1px solid ${C.line}`, borderRadius: 10, color: C.txt, padding: "11px 10px", fontSize: 13, fontFamily: "monospace", outline: "none" }} />
+              style={{ width: "100%", boxSizing: "border-box", background: "#EEF2FA", border: `1px solid ${C.line}`, borderRadius: 10, color: C.txt, padding: "11px 10px", fontSize: 13, fontFamily: "monospace", outline: "none" }} />
             <div style={{ fontSize: 10, color: C.dim, marginTop: 6, lineHeight: 1.7 }}>
               設定するとTO判定・AI実況・練習メニュー・戦術レポート・フォーム助言がClaude AIで文章生成されます。未設定でも、その時の試合データ・計測値から内蔵ロジックが助言を組み立てます(毎回内容は変わります)。キーはこの端末のlocalStorageにのみ保存され、Anthropic以外には送信されません。
             </div>
@@ -1769,12 +1770,12 @@ export default function MomentumCoach() {
 
           <div style={panel}>
             <div style={{ fontSize: 12, color: C.dim, fontWeight: 800, marginBottom: 10 }}>💾 データ管理</div>
-            <label style={{ ...btn("#232d47", { fontSize: 13, padding: "12px 8px", display: "block", textAlign: "center", marginBottom: 8 }) }}>
+            <label style={{ ...btn(C.surf, { color: C.txt, fontSize: 13, padding: "12px 8px", display: "block", textAlign: "center", marginBottom: 8 }) }}>
               📥 試合JSONをインポート(プロ・春高の記録など)
               <input type="file" accept=".json,application/json" onChange={handleImport} style={{ display: "none" }} />
             </label>
             {importMsg && <div style={{ fontSize: 11, fontWeight: 800, color: importMsg.startsWith("✓") ? C.ok : C.warn, marginBottom: 8, textAlign: "center" }}>{importMsg}</div>}
-            <button style={btn("#232d47", { fontSize: 13, padding: "12px 8px", marginBottom: 10 })} onClick={exportLearn} disabled={!learnEntries.length}>
+            <button style={btn(C.surf, { color: C.txt, fontSize: 13, padding: "12px 8px", marginBottom: 10 })} onClick={exportLearn} disabled={!learnEntries.length}>
               💾 学習データ一式をエクスポート
             </button>
             {learnEntries.length === 0 ? (
@@ -1812,7 +1813,7 @@ export default function MomentumCoach() {
                 </button>
               ))}
               <input value={heightCm} onChange={e => setHeightCm(e.target.value.replace(/[^0-9]/g, ""))} maxLength={3} placeholder="身長cm"
-                style={{ width: 70, background: "#0A0F1E", border: `1px solid ${C.line}`, borderRadius: 10, color: C.txt, padding: "10px 8px", fontSize: 13, fontWeight: 700, fontFamily: "'Noto Sans JP', sans-serif", outline: "none", textAlign: "center" }} />
+                style={{ width: 70, background: "#EEF2FA", border: `1px solid ${C.line}`, borderRadius: 10, color: C.txt, padding: "10px 8px", fontSize: 13, fontWeight: 700, fontFamily: "'M PLUS Rounded 1c', sans-serif", outline: "none", textAlign: "center" }} />
             </div>
             {/* ★検出精度モード(モデル切替) */}
             <div style={{ display: "grid", gridTemplateColumns: "auto 1fr 1fr 1fr", gap: 6, alignItems: "center", marginTop: 8 }}>
@@ -1866,14 +1867,14 @@ export default function MomentumCoach() {
               <button style={btn(`linear-gradient(160deg, ${C.us}, #2456c9)`, { fontSize: 13, padding: "13px 6px" })} onClick={() => startForm("camera")} disabled={formStatus === "loading"}>
                 📷 カメラで分析
               </button>
-              <label style={btn("#232d47", { fontSize: 13, padding: "13px 6px", textAlign: "center", display: "block" })}>
+              <label style={btn(C.surf, { color: C.txt, fontSize: 13, padding: "13px 6px", textAlign: "center", display: "block" })}>
                 📁 動画ファイルを分析
                 <input type="file" accept="video/*" style={{ display: "none" }}
                   onChange={e => { const f = e.target.files?.[0]; if (f) startForm("file", f); e.target.value = ""; }} />
               </label>
             </div>
             {hasLastFile && formStatus !== "running" && (
-              <button style={btn("linear-gradient(160deg, #33405f, #232d47)", { fontSize: 13, padding: "12px 6px", marginTop: 8 })}
+              <button style={btn(C.surf, { color: C.txt, fontSize: 13, padding: "12px 6px", marginTop: 8 })}
                 onClick={remeasure} disabled={formStatus === "loading"}>
                 🔁 同じ動画をもう一度測定
               </button>
@@ -1881,12 +1882,12 @@ export default function MomentumCoach() {
             {formStatus === "running" && (
               <div style={{ display: "grid", gridTemplateColumns: formSource === "camera" ? "1fr 1fr" : "1fr", gap: 8, marginTop: 8 }}>
                 {formSource === "camera" && (
-                  <button style={btn("#232d47", { fontSize: 13, padding: "11px 6px" })}
+                  <button style={btn(C.surf, { color: C.txt, fontSize: 13, padding: "11px 6px" })}
                     onClick={() => { const next = camFacing === "user" ? "environment" : "user"; setCamFacing(next); startForm("camera", null, next); }}>
                     🔄 {camFacing === "user" ? "外カメラへ" : "内カメラへ"}切替
                   </button>
                 )}
-                <button style={btn("#45202a", { fontSize: 13, padding: "11px 6px", border: `1px solid ${C.them}66` })} onClick={stopForm}>⏹ 停止</button>
+                <button style={btn("#FFECEC", { fontSize: 13, padding: "11px 6px", color: C.them, border: "1px solid #FFD9D9" })} onClick={stopForm}>⏹ 停止</button>
               </div>
             )}
             <div style={{ fontSize: 10, color: C.dim, marginTop: 8, lineHeight: 1.7 }}>
@@ -1904,8 +1905,8 @@ export default function MomentumCoach() {
                   ["膝", `${liveM.knee}°`, liveM.knee < 140 ? C.ok : C.dim],
                   ["跳躍", `${Math.round(liveM.jump * 100)}%`, liveM.jump > 0.06 ? C.ok : C.dim],
                 ].map(([lbl, v, col]) => (
-                  <div key={lbl} style={{ background: "#0A0F1E", borderRadius: 12, padding: "8px 4px" }}>
-                    <div style={{ fontFamily: "Oswald", fontSize: 18, color: col }}>{v}</div>
+                  <div key={lbl} style={{ background: "#EEF2FA", borderRadius: 12, padding: "8px 4px" }}>
+                    <div style={{ fontFamily: "'Baloo 2'", fontSize: 18, color: col }}>{v}</div>
                     <div style={{ fontSize: 9, color: C.dim }}>{lbl}</div>
                   </div>
                 ))}
@@ -1916,10 +1917,10 @@ export default function MomentumCoach() {
           <div style={panel}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
               <span style={{ fontSize: 12, color: C.dim, fontWeight: 800 }}>🏐 検出スイング: {reps.length}本</span>
-              {repAvg && <span style={{ fontFamily: "Oswald", fontSize: 22, color: repAvg.score >= 70 ? C.ok : repAvg.score >= 45 ? C.warn : C.them }}>平均 {Math.round(repAvg.score)}点</span>}
+              {repAvg && <span style={{ fontFamily: "'Baloo 2'", fontSize: 22, color: repAvg.score >= 70 ? C.ok : repAvg.score >= 45 ? C.warn : C.them }}>平均 {Math.round(repAvg.score)}点</span>}
             </div>
             {repAvg && (
-              <div style={{ background: "#0A0F1E", borderRadius: 14, padding: "10px 12px", marginBottom: 10 }}>
+              <div style={{ background: "#EEF2FA", borderRadius: 14, padding: "10px 12px", marginBottom: 10 }}>
                 <div style={{ fontSize: 10, color: C.dim, fontWeight: 800, marginBottom: 8 }}>📋 採点の内訳 — どこで点を取れて、どこで落としたか</div>
                 {repBreakdown({ maxSpeed: repAvg.speed, maxWristH: repAvg.hit, minElbow: repAvg.cock, elbowAtMax: repAvg.elbow, minKnee: repAvg.knee, maxJump: repAvg.jump }).map(b => {
                   const ratio = b.earned / b.max;
@@ -1927,11 +1928,11 @@ export default function MomentumCoach() {
                   return (
                     <div key={b.key} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
                       <span style={{ width: 72, fontSize: 11, fontWeight: 700 }}>{b.key}</span>
-                      <span style={{ fontFamily: "Oswald", fontSize: 12, width: 42, textAlign: "right", color: col }}>{b.val}{b.unit}</span>
-                      <span style={{ flex: 1, height: 9, background: "#161E33", borderRadius: 5, overflow: "hidden", position: "relative" }}>
+                      <span style={{ fontFamily: "'Baloo 2'", fontSize: 12, width: 42, textAlign: "right", color: col }}>{b.val}{b.unit}</span>
+                      <span style={{ flex: 1, height: 9, background: "#FFFFFF", borderRadius: 5, overflow: "hidden", position: "relative" }}>
                         <span style={{ display: "block", height: "100%", width: `${ratio * 100}%`, background: col, borderRadius: 5, transition: "width .4s" }} />
                       </span>
-                      <span style={{ fontFamily: "Oswald", fontSize: 11, width: 38, textAlign: "right", color: C.dim }}>{Math.round(b.earned)}/{b.max}</span>
+                      <span style={{ fontFamily: "'Baloo 2'", fontSize: 11, width: 38, textAlign: "right", color: C.dim }}>{Math.round(b.earned)}/{b.max}</span>
                     </div>
                   );
                 })}
@@ -1943,8 +1944,8 @@ export default function MomentumCoach() {
             ) : (<>
               {[...reps].reverse().slice(0, 8).map((r, i) => (
                 <div key={r.t} style={{ display: "flex", gap: 8, fontSize: 11, padding: "6px 0", borderTop: i ? `1px solid ${C.line}` : "none", alignItems: "center" }}>
-                  <span style={{ fontFamily: "Oswald", color: C.dim, width: 24 }}>#{reps.length - i}</span>
-                  <span style={{ fontFamily: "Oswald", fontSize: 16, width: 44, color: r.score >= 70 ? C.ok : r.score >= 45 ? C.warn : C.them }}>{r.score}点</span>
+                  <span style={{ fontFamily: "'Baloo 2'", color: C.dim, width: 24 }}>#{reps.length - i}</span>
+                  <span style={{ fontFamily: "'Baloo 2'", fontSize: 16, width: 44, color: r.score >= 70 ? C.ok : r.score >= 45 ? C.warn : C.them }}>{r.score}点</span>
                   <span style={{ flex: 1, color: C.dim }}>振り{(r.maxSpeed ?? 0).toFixed(1)} / 打点+{Math.round(r.maxWristH * 100)}% / 引き{Math.round(r.minElbow ?? 150)}° / 伸び{Math.round(r.elbowAtMax)}° / 膝{Math.round(r.minKnee)}° / 跳{Math.round(r.maxJump * 100)}%{jumpCmOf(r.maxJump)}</span>
                   <button onClick={() => deleteRep(r.t)} title="この1本を削除(誤検出など)"
                     style={{ background: "none", border: "none", color: C.them, cursor: "pointer", fontSize: 14, flexShrink: 0, padding: "0 2px" }}>🗑</button>
@@ -1955,7 +1956,7 @@ export default function MomentumCoach() {
                 <button style={btn("linear-gradient(160deg, #1f5e40, #174530)", { fontSize: 12, padding: "11px 6px", border: `1px solid ${C.ok}` })} onClick={addFormRef}>
                   ⭐ この平均を{formKind}のお手本に登録
                 </button>
-                <button style={btn("#232d47", { fontSize: 12, padding: "11px 6px" })} onClick={() => { setReps([]); setFormAdvice(null); }}>
+                <button style={btn(C.surf, { color: C.txt, fontSize: 12, padding: "11px 6px" })} onClick={() => { setReps([]); setFormAdvice(null); }}>
                   🗑 スイングをクリア
                 </button>
               </div>
@@ -1988,7 +1989,7 @@ export default function MomentumCoach() {
                     <span style={{ display: "flex", gap: 6 }}>
                       <input value={editingRef.label} onChange={e => setEditingRef({ id: r.id, label: e.target.value })} maxLength={20} autoFocus
                         onKeyDown={e => { if (e.key === "Enter" && editingRef.label.trim()) { renameFormRef(r.id, editingRef.label.trim()); setEditingRef(null); } }}
-                        style={{ flex: 1, minWidth: 0, background: "#0A0F1E", border: `1px solid ${C.warn}`, borderRadius: 8, color: C.txt, padding: "6px 8px", fontSize: 12, fontWeight: 700, fontFamily: "'Noto Sans JP', sans-serif", outline: "none" }} />
+                        style={{ flex: 1, minWidth: 0, background: "#EEF2FA", border: `1px solid ${C.warn}`, borderRadius: 8, color: C.txt, padding: "6px 8px", fontSize: 12, fontWeight: 700, fontFamily: "'M PLUS Rounded 1c', sans-serif", outline: "none" }} />
                       <button onClick={() => { if (editingRef.label.trim()) renameFormRef(r.id, editingRef.label.trim()); setEditingRef(null); }}
                         style={{ background: C.ok, border: "none", color: "#fff", borderRadius: 8, padding: "0 10px", cursor: "pointer", fontWeight: 900, fontSize: 12, flexShrink: 0 }}>✓</button>
                     </span>
@@ -2008,7 +2009,7 @@ export default function MomentumCoach() {
               ONのお手本が現在の種目と一致すると下に比較が出ます(同じ種目でONは1つ)。プロの動画を「📁 動画ファイルを分析」→「⭐ お手本に登録」で実測のお手本を追加できます。プリセットは公開データからの推定値です。
             </div>
             {activeRef && (
-              <div style={{ marginTop: 10, background: "#0A0F1E", borderRadius: 14, padding: 12 }}>
+              <div style={{ marginTop: 10, background: "#EEF2FA", borderRadius: 14, padding: 12 }}>
                 <div style={{ fontSize: 11, color: C.warn, fontWeight: 800, marginBottom: 8 }}>📊 「{activeRef.label}」との比較</div>
                 {!repAvg ? (
                   <div style={{ fontSize: 11, color: C.dim }}>スイングを検出すると差分が表示されます。</div>
@@ -2028,8 +2029,8 @@ export default function MomentumCoach() {
                         const good = lowerBetter ? d <= 0 : d >= 0;
                         const show = unit === "" ? (d >= 0 ? "+" : "") + d.toFixed(1) : (d >= 0 ? "+" : "") + Math.round(d) + unit;
                         return (
-                          <div key={lbl} style={{ background: "#161E33", borderRadius: 12, padding: "8px 4px" }}>
-                            <div style={{ fontFamily: "Oswald", fontSize: 16, color: good ? C.ok : C.them }}>{show}</div>
+                          <div key={lbl} style={{ background: "#FFFFFF", borderRadius: 12, padding: "8px 4px" }}>
+                            <div style={{ fontFamily: "'Baloo 2'", fontSize: 16, color: good ? C.ok : C.them }}>{show}</div>
                             <div style={{ fontSize: 9, color: C.dim }}>{lbl}</div>
                           </div>
                         );
@@ -2051,7 +2052,7 @@ export default function MomentumCoach() {
               <div style={{ animation: "slideUp .3s" }}>
                 {formAdvice.map((p, i) => (
                   <div key={i} style={{ fontSize: 13, lineHeight: 1.8, display: "flex", gap: 8, marginBottom: 8 }}>
-                    <span style={{ fontFamily: "Oswald", color: C.us }}>{i + 1}</span><span>{p}</span>
+                    <span style={{ fontFamily: "'Baloo 2'", color: C.us }}>{i + 1}</span><span>{p}</span>
                   </div>
                 ))}
                 <button style={{ background: "none", border: `1px solid ${C.line}`, color: C.dim, borderRadius: 10, padding: "8px 14px", cursor: "pointer", fontWeight: 700, fontSize: 12 }} onClick={() => setFormAdvice(null)}>↻ 再分析</button>
@@ -2100,7 +2101,7 @@ export default function MomentumCoach() {
               {[15, 21, 25].map(t => (
                 <button key={t} onClick={() => setSetTarget(t)}
                   style={btn(setTarget === t ? `linear-gradient(160deg, ${C.us}, #2456c9)` : "#232d47", {
-                    padding: "12px 6px", fontSize: 16, fontFamily: "Oswald",
+                    padding: "12px 6px", fontSize: 16, fontFamily: "'Baloo 2'",
                     border: setTarget === t ? `2px solid ${C.warn}` : "2px solid transparent",
                   })}>
                   {t}点
@@ -2109,8 +2110,8 @@ export default function MomentumCoach() {
               <input value={setTarget || ""} inputMode="numeric" placeholder="自由"
                 onChange={e => { const v = parseInt(e.target.value.replace(/[^0-9]/g, ""), 10); setSetTarget(isNaN(v) ? 0 : Math.min(99, v)); }}
                 style={{
-                  width: 64, background: "#0A0F1E", borderRadius: 10, color: C.txt, padding: "12px 8px",
-                  fontSize: 16, fontWeight: 700, fontFamily: "Oswald", outline: "none", textAlign: "center",
+                  width: 64, background: "#EEF2FA", borderRadius: 10, color: C.txt, padding: "12px 8px",
+                  fontSize: 16, fontWeight: 700, fontFamily: "'Baloo 2'", outline: "none", textAlign: "center",
                   border: [15, 21, 25].includes(setTarget) ? `1px solid ${C.line}` : `2px solid ${C.warn}`,
                 }} />
             </div>
@@ -2175,12 +2176,12 @@ export default function MomentumCoach() {
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div style={{ textAlign: "center", flex: 1 }}>
                 <div style={{ fontSize: 11, color: C.us, fontWeight: 800, letterSpacing: 3 }}>自チーム{rot.serving === "us" && " 🏐"}</div>
-                <div key={`u${us}`} style={{ fontFamily: "Oswald", fontSize: 58, fontWeight: 700, lineHeight: 1, animation: "pop .45s", textShadow: `0 0 24px ${C.us}66` }}>{us}</div>
+                <div key={`u${us}`} style={{ fontFamily: "'Baloo 2'", fontSize: 58, fontWeight: 700, lineHeight: 1, animation: "pop .45s", textShadow: `0 0 24px ${C.us}66` }}>{us}</div>
               </div>
               <div style={{ textAlign: "center" }}>
-                <div style={{ fontFamily: "Oswald", color: C.dim, fontSize: 18 }}>SET {setNo}</div>
+                <div style={{ fontFamily: "'Baloo 2'", color: C.dim, fontSize: 18 }}>SET {setNo}</div>
                 <div style={{ fontSize: 9, color: C.dim, fontWeight: 700 }}>{setTarget}点先取</div>
-                <div style={{ fontFamily: "Oswald", fontSize: 13, color: C.dim }}>
+                <div style={{ fontFamily: "'Baloo 2'", fontSize: 13, color: C.dim }}>
                   <span style={{ color: C.us }}>{setsWon.us}</span> - <span style={{ color: C.them }}>{setsWon.them}</span>
                 </div>
                 <div style={{ fontSize: 22, animation: "floatBall 2.4s ease-in-out infinite" }}>🏐</div>
@@ -2193,7 +2194,7 @@ export default function MomentumCoach() {
               </div>
               <div style={{ textAlign: "center", flex: 1 }}>
                 <div style={{ fontSize: 11, color: C.them, fontWeight: 800, letterSpacing: 3 }}>相手{rot.serving === "them" && " 🏐"}</div>
-                <div key={`t${them}`} style={{ fontFamily: "Oswald", fontSize: 58, fontWeight: 700, lineHeight: 1, animation: "pop .45s", textShadow: `0 0 24px ${C.them}66` }}>{them}</div>
+                <div key={`t${them}`} style={{ fontFamily: "'Baloo 2'", fontSize: 58, fontWeight: 700, lineHeight: 1, animation: "pop .45s", textShadow: `0 0 24px ${C.them}66` }}>{them}</div>
               </div>
             </div>
 
@@ -2201,9 +2202,9 @@ export default function MomentumCoach() {
             <div style={{ marginTop: 12 }}>
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: C.dim, marginBottom: 4 }}>
                 <span>📈 セット獲得確率(AI予測)</span>
-                <span style={{ fontFamily: "Oswald", fontSize: 15, fontWeight: 700, color: wp >= 0.5 ? C.us : C.them }}>{Math.round(wp * 100)}%</span>
+                <span style={{ fontFamily: "'Baloo 2'", fontSize: 15, fontWeight: 700, color: wp >= 0.5 ? C.us : C.them }}>{Math.round(wp * 100)}%</span>
               </div>
-              <div style={{ height: 12, borderRadius: 6, background: "#3a1d22", overflow: "hidden", position: "relative" }}>
+              <div style={{ height: 12, borderRadius: 6, background: "#FFECEC", overflow: "hidden", position: "relative" }}>
                 <div style={{ height: "100%", width: `${wp * 100}%`, background: `linear-gradient(90deg, #2456c9, ${C.us})`, borderRadius: 6, transition: "width .8s cubic-bezier(.2,.9,.3,1)" }} />
                 <div style={{ position: "absolute", left: "50%", top: 0, bottom: 0, width: 1.5, background: "rgba(255,255,255,.5)" }} />
               </div>
@@ -2225,10 +2226,10 @@ export default function MomentumCoach() {
             <div style={{ marginTop: 12 }}>
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: C.dim, marginBottom: 4 }}>
                 <span>相手の流れ</span>
-                <span style={{ fontFamily: "Oswald", fontSize: 14 }}>M = {m.toFixed(2)}</span>
+                <span style={{ fontFamily: "'Baloo 2'", fontSize: 14 }}>M = {m.toFixed(2)}</span>
                 <span>自チームの流れ</span>
               </div>
-              <div style={{ position: "relative", height: 26, borderRadius: 13, overflow: "hidden", background: `linear-gradient(90deg, ${C.them}, #5a4070 50%, ${C.us})` }}>
+              <div style={{ position: "relative", height: 26, borderRadius: 13, overflow: "hidden", background: `linear-gradient(90deg, ${C.them}, #E0D6EC 50%, ${C.us})` }}>
                 <div style={{ position: "absolute", inset: 0, opacity: .25, background: "repeating-linear-gradient(115deg, transparent 0 14px, rgba(255,255,255,.5) 14px 28px)", animation: "marquee 1.4s linear infinite" }} />
                 <div style={{ position: "absolute", left: "50%", top: 0, bottom: 0, width: 2, background: "rgba(255,255,255,.6)" }} />
                 <div style={{ position: "absolute", top: 1, left: `calc(${pct}% - 12px)`, width: 24, height: 24, borderRadius: "50%", background: "#fff", border: `5px solid ${m < 0 ? C.them : C.us}`, transition: "left .6s cubic-bezier(.2,1.4,.3,1)", boxShadow: `0 0 14px ${m < 0 ? C.them : C.us}` }} />
@@ -2240,7 +2241,7 @@ export default function MomentumCoach() {
                 <span>🤖 AIコーチの警戒度</span>
                 <span style={{ fontWeight: 900, color: threatColor }}>{judging ? "判定中…" : threatLabel}</span>
               </div>
-              <div style={{ height: 8, borderRadius: 4, background: "#0A0F1E", overflow: "hidden" }}>
+              <div style={{ height: 8, borderRadius: 4, background: "#EEF2FA", overflow: "hidden" }}>
                 <div style={{ height: "100%", width: `${threatPct}%`, background: threatColor, borderRadius: 4, transition: "width .6s, background .6s", animation: judging ? "pulse .8s infinite" : "none" }} />
               </div>
               {threat.factors.length > 0 && (
@@ -2296,15 +2297,15 @@ export default function MomentumCoach() {
           {!setEnd && (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
               <button onClick={manualTimeoutUs} disabled={timeoutsLeft <= 0}
-                style={btn(timeoutsLeft > 0 ? "linear-gradient(160deg, #4a3a14, #332a10)" : "#1a2138", { fontSize: 12, padding: "11px 4px", border: `1px solid ${timeoutsLeft > 0 ? C.warn + "66" : C.line}`, color: timeoutsLeft > 0 ? C.txt : C.dim })}>
+                style={btn(timeoutsLeft > 0 ? "#FFF4DF" : C.surf, { fontSize: 12, padding: "11px 4px", border: `1px solid ${timeoutsLeft > 0 ? "#FFE2C9" : C.line}`, color: timeoutsLeft > 0 ? C.warnText : C.dim })}>
                 ⏱ 自チームTO({timeoutsLeft})
               </button>
               <button onClick={manualTimeoutThem}
-                style={btn("linear-gradient(160deg, #45202a, #331820)", { fontSize: 12, padding: "11px 4px", border: `1px solid ${C.them}44` })}>
+                style={btn("#FFECEC", { fontSize: 12, padding: "11px 4px", border: "1px solid #FFD9D9", color: C.them })}>
                 ⏱ 相手TO
               </button>
               <button onClick={() => setSubbing(s => s ? null : {})}
-                style={btn(subbing ? "linear-gradient(160deg, #3a2a55, #2a1f40)" : "#232d47", { fontSize: 12, padding: "11px 4px", border: subbing ? "1px solid #B66EFF" : "1px solid transparent" })}>
+                style={btn(subbing ? "#F0EBFF" : C.surf, { fontSize: 12, padding: "11px 4px", border: subbing ? "1px solid #B66EFF" : `1px solid ${C.line}`, color: subbing ? "#7B5BE0" : C.dim })}>
                 🔄 選手交代
               </button>
             </div>
@@ -2333,7 +2334,7 @@ export default function MomentumCoach() {
                 </div>
                 <div style={{ display: "flex", gap: 8 }}>
                   <input value={subbing.name || ""} onChange={e => setSubbing(s => ({ ...s, name: e.target.value }))} maxLength={10} placeholder="名前" autoFocus
-                    style={{ flex: 1, minWidth: 0, background: "#0A0F1E", border: `1px solid ${C.line}`, borderRadius: 10, color: C.txt, padding: "11px 10px", fontSize: 14, fontWeight: 700, fontFamily: "'Noto Sans JP', sans-serif", outline: "none" }} />
+                    style={{ flex: 1, minWidth: 0, background: "#EEF2FA", border: `1px solid ${C.line}`, borderRadius: 10, color: C.txt, padding: "11px 10px", fontSize: 14, fontWeight: 700, fontFamily: "'M PLUS Rounded 1c', sans-serif", outline: "none" }} />
                   <button onClick={confirmSub} disabled={!subbing.name?.trim()}
                     style={btn(subbing.name?.trim() ? "linear-gradient(160deg, #1f5e40, #174530)" : "#232d47", { width: 110, fontSize: 13, padding: "11px 6px", border: `1px solid ${subbing.name?.trim() ? C.ok : C.line}` })}>
                     ✓ 交代する
@@ -2352,14 +2353,14 @@ export default function MomentumCoach() {
               // コンパクト表示: 1行。タップで詳細を開ける
               return (
                 <button onClick={() => setForecastOpen(true)}
-                  style={{ ...panel, padding: "10px 14px", display: "flex", alignItems: "center", gap: 10, width: "100%", cursor: "pointer", textAlign: "left", color: C.txt, fontFamily: "'Noto Sans JP', sans-serif", border: `1px solid ${forecast.level.c}33` }}>
+                  style={{ ...panel, padding: "10px 14px", display: "flex", alignItems: "center", gap: 10, width: "100%", cursor: "pointer", textAlign: "left", color: C.txt, fontFamily: "'M PLUS Rounded 1c', sans-serif", border: `1px solid ${forecast.level.c}33` }}>
                   <span style={{ fontSize: 20 }}>{forecast.level.i}</span>
                   <span style={{ fontSize: 12, fontWeight: 900 }}>🌦 モメンタム予報</span>
                   <span style={{ fontSize: 12, fontWeight: 900, color: forecast.level.c }}>{forecast.level.t}</span>
-                  <span style={{ flex: 1, height: 6, borderRadius: 3, background: "#0A0F1E", overflow: "hidden" }}>
+                  <span style={{ flex: 1, height: 6, borderRadius: 3, background: "#EEF2FA", overflow: "hidden" }}>
                     <span style={{ display: "block", height: "100%", width: `${forecast.risk}%`, background: forecast.level.c, borderRadius: 3, transition: "width .5s" }} />
                   </span>
-                  <span style={{ fontFamily: "Oswald", fontSize: 14, color: forecast.level.c }}>{forecast.risk}%</span>
+                  <span style={{ fontFamily: "'Baloo 2'", fontSize: 14, color: forecast.level.c }}>{forecast.risk}%</span>
                   <span style={{ fontSize: 13, color: C.dim }}>›</span>
                 </button>
               );
@@ -2382,7 +2383,7 @@ export default function MomentumCoach() {
                       <span style={{ fontSize: 12, fontWeight: 900, color: forecast.level.c }}>{forecast.level.t}</span>
                     </div>
                     <div style={{ fontSize: 10, color: C.dim, marginTop: 2 }}>
-                      崩壊リスク <b style={{ fontFamily: "Oswald", fontSize: 15, color: forecast.level.c }}>{forecast.risk}%</b>
+                      崩壊リスク <b style={{ fontFamily: "'Baloo 2'", fontSize: 15, color: forecast.level.c }}>{forecast.risk}%</b>
                       <span style={{ marginLeft: 8 }}>{forecast.learnedHit ? "🧠 学習データ反映" : "定石ベース"}</span>
                     </div>
                   </div>
@@ -2391,7 +2392,7 @@ export default function MomentumCoach() {
                       style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", fontSize: 16, fontWeight: 900, padding: 4 }}>▴</button>
                   )}
                 </div>
-                <div style={{ height: 8, borderRadius: 4, background: "#0A0F1E", overflow: "hidden", margin: "8px 0" }}>
+                <div style={{ height: 8, borderRadius: 4, background: "#EEF2FA", overflow: "hidden", margin: "8px 0" }}>
                   <div style={{ height: "100%", width: `${forecast.risk}%`, background: forecast.level.c, borderRadius: 4, transition: "width .5s, background .5s" }} />
                 </div>
                 {forecast.trigger && (
@@ -2405,7 +2406,7 @@ export default function MomentumCoach() {
                   <polygon points={band.join(" ")} fill={end.p50 >= 0 ? `${C.us}22` : `${C.them}22`} />
                   <path d={mid} fill="none" stroke={end.p50 >= 0 ? C.us : C.them} strokeWidth="2.5" strokeLinejoin="round" />
                   {cone.map((p, i) => <circle key={i} cx={xs(i)} cy={ys(p.p50)} r="2" fill={end.p50 >= 0 ? C.us : C.them} />)}
-                  <text x={cw - padX} y={ys(end.p50) - 5} textAnchor="end" fontSize="11" fontFamily="Oswald" fontWeight="700" fill={end.p50 >= 0 ? C.us : C.them}>
+                  <text x={cw - padX} y={ys(end.p50) - 5} textAnchor="end" fontSize="11" fontFamily="'Baloo 2'" fontWeight="700" fill={end.p50 >= 0 ? C.us : C.them}>
                     {end.p50 >= 0 ? "+" : ""}{end.p50}
                   </text>
                 </svg>
@@ -2424,7 +2425,7 @@ export default function MomentumCoach() {
           )}
 
           {verdict && !verdict.alert && (
-            <div style={{ background: "linear-gradient(160deg, #1a2a22, #14211c)", border: "1px solid #2f5a44", borderRadius: 18, padding: "12px 16px", animation: "slideUp .3s", fontSize: 13 }}>
+            <div style={{ background: "#E4F7F0", border: "1px solid #BFEAD9", borderRadius: 18, padding: "12px 16px", animation: "slideUp .3s", fontSize: 13 }}>
               <div style={{ fontWeight: 900, color: C.ok, marginBottom: 4 }}>
                 🤖 AIコーチ判定: タイムアウトはまだ温存 {verdict.offline && <span style={{ color: C.dim, fontWeight: 500 }}>(オフライン判定)</span>}
               </div>
@@ -2453,14 +2454,14 @@ export default function MomentumCoach() {
                 <div key={i} style={{ fontSize: 13, display: "flex", gap: 8 }}>
                   <span style={{ color: r.e === 1 ? C.us : C.them, fontWeight: 900 }}>{r.e === 1 ? "+" : "−"}</span>
                   <span>{r.play}</span><span style={{ color: C.dim }}>{labelOf(r.target)}</span>
-                  <span style={{ marginLeft: "auto", color: C.dim, fontFamily: "Oswald" }}>{(r.w * r.e).toFixed(1)}</span>
+                  <span style={{ marginLeft: "auto", color: C.dim, fontFamily: "'Baloo 2'" }}>{(r.w * r.e).toFixed(1)}</span>
                 </div>
               ))}
             </div>
           </div>
 
           {allSets.length > 0 && (
-            <button style={btn("linear-gradient(160deg, #33405f, #232d47)", { fontSize: 15, padding: "14px 8px" })} onClick={() => setMode("report")}>
+            <button style={btn(C.surf, { color: C.txt, fontSize: 15, padding: "14px 8px" })} onClick={() => setMode("report")}>
               📊 ここまでの分析レポートを見る
             </button>
           )}
@@ -2473,7 +2474,7 @@ export default function MomentumCoach() {
 
           <div style={{ ...panel, textAlign: "center" }}>
             <div style={{ fontSize: 12, color: C.dim, fontWeight: 800 }}>セットカウント</div>
-            <div style={{ fontFamily: "Oswald", fontSize: 44, fontWeight: 700 }}>
+            <div style={{ fontFamily: "'Baloo 2'", fontSize: 44, fontWeight: 700 }}>
               <span style={{ color: C.us }}>{setsWon.us}</span><span style={{ color: C.dim }}> - </span><span style={{ color: C.them }}>{setsWon.them}</span>
             </div>
           </div>
@@ -2495,9 +2496,9 @@ export default function MomentumCoach() {
               <div style={{ fontSize: 11, fontWeight: 900, color: C.dim, margin: "12px 0 6px" }}>⚡ ターニングポイント(勝率変動 Top3)</div>
               {turningPoints.map((t, i) => (
                 <div key={i} style={{ fontSize: 12, lineHeight: 1.8, display: "flex", gap: 6 }}>
-                  <span style={{ fontFamily: "Oswald", color: C.warn }}>#{i + 1}</span>
+                  <span style={{ fontFamily: "'Baloo 2'", color: C.warn }}>#{i + 1}</span>
                   <span>SET{allSets[t.si].setNo || t.si + 1}: {t.r.play}({labelOf(t.r.target)})</span>
-                  <span style={{ marginLeft: "auto", fontFamily: "Oswald", color: t.r.wp > t.r.wpBefore ? C.us : C.them }}>
+                  <span style={{ marginLeft: "auto", fontFamily: "'Baloo 2'", color: t.r.wp > t.r.wpBefore ? C.us : C.them }}>
                     {Math.round(t.r.wpBefore * 100)}%→{Math.round(t.r.wp * 100)}%
                   </span>
                 </div>
@@ -2530,9 +2531,9 @@ export default function MomentumCoach() {
                   const total = s.won + s.lost;
                   const isWorst = worstRot && worstRot.i === i;
                   return (
-                    <div key={i} style={{ background: "#0A0F1E", borderRadius: 10, padding: "8px 2px", textAlign: "center", border: isWorst ? `1px solid ${C.them}` : "1px solid transparent" }}>
+                    <div key={i} style={{ background: "#EEF2FA", borderRadius: 10, padding: "8px 2px", textAlign: "center", border: isWorst ? `1px solid ${C.them}` : "1px solid transparent" }}>
                       <div style={{ fontSize: 10, fontWeight: 900, color: isWorst ? C.them : C.dim }}>R{i + 1}{isWorst && "⚠"}</div>
-                      <div style={{ fontFamily: "Oswald", fontSize: 14 }}>
+                      <div style={{ fontFamily: "'Baloo 2'", fontSize: 14 }}>
                         <span style={{ color: C.us }}>{s.won}</span><span style={{ color: C.dim, fontSize: 10 }}>-</span><span style={{ color: C.them }}>{s.lost}</span>
                       </div>
                       <div style={{ height: 4, borderRadius: 2, background: C.line, marginTop: 4, overflow: "hidden" }}>
@@ -2558,10 +2559,10 @@ export default function MomentumCoach() {
                 return (
                   <div key={k} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, fontSize: 12 }}>
                     <span style={{ width: 110, fontWeight: 700, color: t.team === "us" ? C.us : C.them }}>{labelOf(t)}</span>
-                    <div style={{ flex: 1, height: 10, background: "#0A0F1E", borderRadius: 5, overflow: "hidden" }}>
+                    <div style={{ flex: 1, height: 10, background: "#EEF2FA", borderRadius: 5, overflow: "hidden" }}>
                       <div style={{ width: `${(v / max) * 100}%`, height: "100%", background: t.team === "us" ? C.us : C.them, borderRadius: 5 }} />
                     </div>
-                    <span style={{ fontFamily: "Oswald", width: 30, textAlign: "right" }}>{v}本</span>
+                    <span style={{ fontFamily: "'Baloo 2'", width: 30, textAlign: "right" }}>{v}本</span>
                   </div>
                 );
               })}
@@ -2578,12 +2579,12 @@ export default function MomentumCoach() {
           <div style={panel}>
             <div style={{ fontSize: 12, color: C.dim, fontWeight: 800, marginBottom: 10 }}>🔬 AI判定の検証データ(自動収集)</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, textAlign: "center" }}>
-              <div style={{ background: "#0A0F1E", borderRadius: 14, padding: 12 }}>
-                <div style={{ fontFamily: "Oswald", fontSize: 30, color: C.warn }}>{toRate !== null ? `${Math.round(toRate * 100)}%` : "—"}</div>
+              <div style={{ background: "#EEF2FA", borderRadius: 14, padding: 12 }}>
+                <div style={{ fontFamily: "'Baloo 2'", fontSize: 30, color: C.warn }}>{toRate !== null ? `${Math.round(toRate * 100)}%` : "—"}</div>
                 <div style={{ fontSize: 10, color: C.dim, lineHeight: 1.5 }}>TO実施後の<br />直後3ラリー得点率</div>
               </div>
-              <div style={{ background: "#0A0F1E", borderRadius: 14, padding: 12 }}>
-                <div style={{ fontFamily: "Oswald", fontSize: 30, color: C.them }}>{igRate !== null ? `${Math.round(igRate * 100)}%` : "—"}</div>
+              <div style={{ background: "#EEF2FA", borderRadius: 14, padding: 12 }}>
+                <div style={{ fontFamily: "'Baloo 2'", fontSize: 30, color: C.them }}>{igRate !== null ? `${Math.round(igRate * 100)}%` : "—"}</div>
                 <div style={{ fontSize: 10, color: C.dim, lineHeight: 1.5 }}>警告無視後の<br />直後3ラリー得点率</div>
               </div>
             </div>
@@ -2592,7 +2593,7 @@ export default function MomentumCoach() {
               {alertVerdicts.length > 0 && <> / 警告の妥当率: <b style={{ color: C.txt }}>{correctAlerts}/{alertVerdicts.length}</b></>}
             </div>
             {/* ★研究用エクスポート */}
-            <button style={{ ...btn("#232d47", { fontSize: 13, padding: "12px 8px", marginTop: 10 }) }} onClick={exportData} disabled={allSets.length === 0}>
+            <button style={{ ...btn(C.surf, { color: C.txt, fontSize: 13, padding: "12px 8px", marginTop: 10 }) }} onClick={exportData} disabled={allSets.length === 0}>
               💾 試合データをエクスポート(JSON / 研究・統計分析用)
             </button>
           </div>
@@ -2602,7 +2603,7 @@ export default function MomentumCoach() {
             {calib.length === 0 ? (
               <div style={{ fontSize: 12, color: C.dim }}>失点ラッシュに偏るプレー種類は検出されていません(データを蓄積してください)。</div>
             ) : calib.map((c, i) => (
-              <div key={i} style={{ background: "#0A0F1E", borderRadius: 14, padding: 12, marginBottom: 8, fontSize: 13 }}>
+              <div key={i} style={{ background: "#EEF2FA", borderRadius: 14, padding: 12, marginBottom: 8, fontSize: 13 }}>
                 <div style={{ fontWeight: 800 }}>{c.play}: W = {c.current.toFixed(1)} → <span style={{ color: C.warn }}>{c.suggested.toFixed(1)}</span> に引き上げ推奨</div>
                 <div style={{ fontSize: 11, color: C.dim, marginTop: 4 }}>{c.note} — このチームの連続失点の引き金になっています</div>
               </div>
@@ -2621,8 +2622,8 @@ export default function MomentumCoach() {
                 {menuLoading ? "🤖 AIがメニュー作成中…" : "🤖 AIに練習メニューを作らせる"}
               </button>
             ) : menu.map((d, i) => (
-              <div key={i} style={{ background: "#0A0F1E", borderRadius: 14, padding: 12, marginBottom: 8, fontSize: 13, animation: "slideUp .3s" }}>
-                <div style={{ fontWeight: 800 }}>{i + 1}. {d.title} <span style={{ color: C.warn, fontFamily: "Oswald" }}>{d.mins}分</span></div>
+              <div key={i} style={{ background: "#EEF2FA", borderRadius: 14, padding: 12, marginBottom: 8, fontSize: 13, animation: "slideUp .3s" }}>
+                <div style={{ fontWeight: 800 }}>{i + 1}. {d.title} <span style={{ color: C.warn, fontFamily: "'Baloo 2'" }}>{d.mins}分</span></div>
                 <div style={{ fontSize: 12, color: C.dim, marginTop: 4, lineHeight: 1.6 }}>{d.desc}</div>
               </div>
             ))}
@@ -2631,7 +2632,7 @@ export default function MomentumCoach() {
           <div style={{ fontSize: 11, color: C.ok, fontWeight: 800, textAlign: "center" }}>
             🧠 試合終了時のデータはAI学習センターに自動保存されています
           </div>
-          <button style={btn("linear-gradient(160deg, #33405f, #232d47)", { fontSize: 15, padding: "14px 8px" })} onClick={goHome}>
+          <button style={btn(C.surf, { color: C.txt, fontSize: 15, padding: "14px 8px" })} onClick={goHome}>
             🏠 ホームに戻る(記録をリセットして次の試合へ)
           </button>
         </>)}
@@ -2644,10 +2645,10 @@ export default function MomentumCoach() {
           }}>
             <div style={{ width: "100%", maxWidth: 400, textAlign: "center", animation: "zoomIn .4s cubic-bezier(.2,1.4,.3,1)" }}>
               <div style={{ fontSize: 56 }}>{setEnd.winner === "us" ? "🏆" : "😤"}</div>
-              <div style={{ fontFamily: "Oswald", fontSize: 30, fontWeight: 700, letterSpacing: 2, color: setEnd.winner === "us" ? C.us : C.them }}>
+              <div style={{ fontFamily: "'Baloo 2'", fontSize: 30, fontWeight: 700, letterSpacing: 2, color: setEnd.winner === "us" ? C.us : C.them }}>
                 SET {setNo} {setEnd.winner === "us" ? "WON!" : "LOST"}
               </div>
-              <div style={{ fontFamily: "Oswald", fontSize: 64, fontWeight: 700, margin: "4px 0" }}>
+              <div style={{ fontFamily: "'Baloo 2'", fontSize: 64, fontWeight: 700, margin: "4px 0" }}>
                 <span style={{ color: C.us }}>{us}</span><span style={{ color: C.dim }}> - </span><span style={{ color: C.them }}>{them}</span>
               </div>
               <div style={{ fontSize: 14, fontWeight: 800, color: C.dim, marginBottom: 18 }}>
@@ -2655,13 +2656,13 @@ export default function MomentumCoach() {
                   ? (us > setTarget ? "デュースを制した!この粘りが本物の力 💪" : "セット獲得!この流れを次に繋げよう")
                   : (them > setTarget ? "デュースの末に惜敗…次は取り切ろう" : "切り替えよう。データは次のセットの武器になる")}
                 <br />
-                <span style={{ fontFamily: "Oswald", fontSize: 13 }}>セットカウント {setsWon.us + (setEnd.winner === "us" ? 1 : 0)} - {setsWon.them + (setEnd.winner === "them" ? 1 : 0)}</span>
+                <span style={{ fontFamily: "'Baloo 2'", fontSize: 13 }}>セットカウント {setsWon.us + (setEnd.winner === "us" ? 1 : 0)} - {setsWon.them + (setEnd.winner === "them" ? 1 : 0)}</span>
               </div>
               <button style={btn(`linear-gradient(160deg, ${C.us}, #2456c9)`, { fontSize: 19, fontWeight: 900, marginBottom: 10 })}
                 onPointerDown={press} onPointerUp={release} onPointerLeave={release} onClick={nextSet}>
                 ▶ 次のセットへ(ローテ設定 → SET {setNo + 1})
               </button>
-              <button style={btn("linear-gradient(160deg, #33405f, #232d47)", { fontSize: 15, padding: "14px 8px", marginBottom: 10 })} onClick={finishMatch}>
+              <button style={btn(C.surf, { color: C.txt, fontSize: 15, padding: "14px 8px", marginBottom: 10 })} onClick={finishMatch}>
                 📊 試合終了 → 分析レポート
               </button>
               <button style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", fontSize: 12, fontWeight: 700 }} onClick={undoFromSetEnd}>
@@ -2674,14 +2675,14 @@ export default function MomentumCoach() {
         {/* ===== アラート ===== */}
         {alert && (
           <div style={{ position: "fixed", inset: 0, background: "rgba(10,15,30,.93)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24, zIndex: 50 }}>
-            <div style={{ width: "100%", maxWidth: 400, background: "#161E33", border: `2px solid ${C.them}`, borderRadius: 26, padding: 26, textAlign: "center", animation: "siren 1.1s infinite, slideUp .3s" }}>
+            <div style={{ width: "100%", maxWidth: 400, background: "#FFFFFF", border: `2px solid ${C.them}`, borderRadius: 26, padding: 26, textAlign: "center", animation: "siren 1.1s infinite, slideUp .3s" }}>
               <div style={{ fontSize: 38, animation: "pulse 1s infinite" }}>🚨</div>
               <div style={{ fontSize: 20, fontWeight: 900, color: C.them, marginTop: 4 }}>AIコーチ判定: 今がタイムアウトの取り時!</div>
               <div style={{ display: "flex", justifyContent: "center", gap: 2, marginTop: 6 }}>
                 {[1, 2, 3, 4, 5].map(i => <span key={i} style={{ fontSize: 16, opacity: i <= (alert.urgency || 3) ? 1 : .25 }}>⭐</span>)}
               </div>
               <div style={{ fontSize: 13, color: C.dim, marginTop: 6, fontWeight: 700 }}>理由: {alert.reason} {alert.offline && "(オフライン判定)"}</div>
-              <div style={{ margin: "14px 0", padding: 16, background: "#0A0F1E", borderRadius: 16, fontSize: 15, lineHeight: 1.8, textAlign: "left" }}>📣 {alert.advice}</div>
+              <div style={{ margin: "14px 0", padding: 16, background: "#EEF2FA", borderRadius: 16, fontSize: 15, lineHeight: 1.8, textAlign: "left" }}>📣 {alert.advice}</div>
               <button style={btn(C.warn, { color: "#1a1a1a", fontSize: 21, fontWeight: 900, boxShadow: `0 6px 24px ${C.warn}66` })} onPointerDown={press} onPointerUp={release} onPointerLeave={release} onClick={takeTimeout}>
                 ⏱ タイムアウトを取る!(残{timeoutsLeft})
               </button>
@@ -2699,7 +2700,7 @@ export default function MomentumCoach() {
                 <circle cx="100" cy="100" r={ringR} fill="none" stroke="rgba(0,0,0,.15)" strokeWidth="12" />
                 <circle cx="100" cy="100" r={ringR} fill="none" stroke="#1a1a1a" strokeWidth="12" strokeLinecap="round" strokeDasharray={ringC} strokeDashoffset={ringC * (1 - timeout_.sec / 30)} style={{ transition: "stroke-dashoffset 1s linear" }} />
               </svg>
-              <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Oswald", fontSize: 72, fontWeight: 700 }}>{timeout_.sec}</div>
+              <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Baloo 2'", fontSize: 72, fontWeight: 700 }}>{timeout_.sec}</div>
             </div>
             <div style={{ background: "rgba(0,0,0,.14)", borderRadius: 18, padding: 20, fontSize: 18, fontWeight: 800, lineHeight: 1.9, maxWidth: 380 }}>📣 {timeout_.advice}</div>
             <button style={{ marginTop: 26, background: "#1a1a1a", color: "#fff", border: "none", borderRadius: 16, padding: "14px 40px", fontSize: 16, fontWeight: 800, cursor: "pointer" }} onClick={() => setTimeoutS(null)}>試合に戻る →</button>
