@@ -13,7 +13,6 @@
 <meta name="apple-mobile-web-app-title" content="Momentum Coach" />
 <link rel="apple-touch-icon" href="apple-touch-icon.png" />
 <link rel="icon" href="icon-192.png" />
-<script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
 <style>body{margin:0;background:#0A0F1E}</style>
 </head>
 <body>
@@ -21,15 +20,37 @@
 <script type="module">
   const REACT_URL = "https://esm.sh/react@18.3.1";
   const DOM_URL = "https://esm.sh/react-dom@18.3.1/client";
+  const COMPILE_KEY = "vbmc_compiled_v1";
+  // 軽量ハッシュ(ソースが変わったかの判定用)
+  const hashOf = s => { let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0; return s.length + ":" + (h >>> 0).toString(36); };
+  // Babel(重い変換エンジン)はキャッシュが無い初回だけ動的に読み込む
+  const loadBabel = () => new Promise((res, rej) => {
+    if (window.Babel) return res(window.Babel);
+    const sc = document.createElement("script");
+    sc.src = "https://unpkg.com/@babel/standalone@7.24.7/babel.min.js";
+    sc.onload = () => res(window.Babel); sc.onerror = rej;
+    document.head.appendChild(sc);
+  });
   try {
     // アプリ本体は絶対URLで取得(PWA全画面起動など相対パスの基準が不安定な文脈でも確実に解決する)
     let base;
     try { base = new URL(".", document.baseURI || location.href).href; }
     catch { base = "https://1f10230015.github.io/volleyball-assist/"; }
-    const jsxUrl = base + "momentum-coach.jsx";
-    let src = await (await fetch(jsxUrl, { cache: "no-store" })).text();
+    let src = await (await fetch(base + "momentum-coach.jsx", { cache: "no-store" })).text();
     src = src.replace('from "react"', `from "${REACT_URL}"`);
-    const out = Babel.transform(src, { presets: [["react", { runtime: "automatic", importSource: REACT_URL }]], filename: "momentum-coach.jsx" }).code;
+    const sig = hashOf(src);
+
+    // ★コンパイル結果のキャッシュ: ソースが前回と同じなら変換(Babel)を丸ごとスキップ
+    let out, cached = null;
+    try { cached = JSON.parse(localStorage.getItem(COMPILE_KEY) || "null"); } catch { /* noop */ }
+    if (cached && cached.sig === sig && cached.code) {
+      out = cached.code;
+    } else {
+      const Babel = await loadBabel();
+      out = Babel.transform(src, { presets: [["react", { runtime: "automatic", importSource: REACT_URL }]], filename: "momentum-coach.jsx" }).code;
+      try { localStorage.setItem(COMPILE_KEY, JSON.stringify({ sig, code: out })); } catch { /* 容量超過は無視 */ }
+    }
+
     const mod = await import(URL.createObjectURL(new Blob([out], { type: "text/javascript" })));
     const React = await import(REACT_URL);
     const { createRoot } = await import(DOM_URL);
