@@ -486,12 +486,14 @@ const dist3 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, (a.z ?? 0) - (b.z ?? 0)
 function repBreakdown(r) {
   const c01 = v => Math.min(1, Math.max(0, v));
   return [
-    { key: "振りの速さ", earned: c01(((r.maxSpeed ?? 0) - 1.5) / 4.5) * 25, max: 25, val: `${(r.maxSpeed ?? 0).toFixed(1)}`, unit: "", goal: "6.0", lower: false },
-    { key: "打点の高さ", earned: c01((r.maxWristH - 0.15) / 0.23) * 25, max: 25, val: `+${Math.round(r.maxWristH * 100)}`, unit: "%", goal: "+38%", lower: false },
-    { key: "テイクバック", earned: c01((150 - (r.minElbow ?? 150)) / 60) * 20, max: 20, val: `${Math.round(r.minElbow ?? 150)}`, unit: "°", goal: "90°以下", lower: true },
-    { key: "肘の伸び", earned: c01(((r.elbowAtMax ?? 120) - 120) / 50) * 15, max: 15, val: `${Math.round(r.elbowAtMax ?? 120)}`, unit: "°", goal: "170°", lower: false },
-    { key: "沈み込み", earned: c01((150 - r.minKnee) / 40) * 7, max: 7, val: `${Math.round(r.minKnee)}`, unit: "°", goal: "110°以下", lower: true },
-    { key: "ジャンプ", earned: c01(((r.maxJump ?? 0) - 0.03) / 0.22) * 8, max: 8, val: `${Math.round((r.maxJump ?? 0) * 100)}`, unit: "%", goal: "+25%", lower: false },
+    // 配点と目標値を再調整: ノイズの大きい振り速度の比重を下げ、打点・ジャンプ(技術/身体能力)を厚く。
+    // 飽和しやすい項目は目標値を厳しくして差がつくように。
+    { key: "振りの速さ", earned: c01(((r.maxSpeed ?? 0) - 2) / 6) * 16, max: 16, val: `${(r.maxSpeed ?? 0).toFixed(1)}`, unit: "", goal: "8.0", lower: false },
+    { key: "打点の高さ", earned: c01((r.maxWristH - 0.18) / 0.27) * 25, max: 25, val: `+${Math.round(r.maxWristH * 100)}`, unit: "%", goal: "+45%", lower: false },
+    { key: "テイクバック", earned: c01((135 - (r.minElbow ?? 150)) / 50) * 14, max: 14, val: `${Math.round(r.minElbow ?? 150)}`, unit: "°", goal: "85°以下", lower: true },
+    { key: "肘の伸び", earned: c01(((r.elbowAtMax ?? 120) - 120) / 55) * 15, max: 15, val: `${Math.round(r.elbowAtMax ?? 120)}`, unit: "°", goal: "175°", lower: false },
+    { key: "沈み込み", earned: c01((140 - r.minKnee) / 45) * 12, max: 12, val: `${Math.round(r.minKnee)}`, unit: "°", goal: "95°以下", lower: true },
+    { key: "ジャンプ", earned: c01(((r.maxJump ?? 0) - 0.05) / 0.23) * 18, max: 18, val: `${Math.round((r.maxJump ?? 0) * 100)}`, unit: "%", goal: "+28%", lower: false },
   ];
 }
 function repScore(r) {
@@ -1103,12 +1105,14 @@ export default function MomentumCoach() {
     // 直近1.2秒の肘角度(テイクバック=振り始め前に肘をどこまで曲げて引けたか)
     fs.elbowWin.push({ t: tMs, elbow });
     while (fs.elbowWin.length && tMs - fs.elbowWin[0].t > 1200) fs.elbowWin.shift();
-    // 腰の基準線(非スイング時のみ更新)→ ジャンプ量。脚が見えないフレームは更新しない
-    if (lowerOk) {
+    // 腰の基準線(立位)→ ジャンプ量。腰(hip)さえ見えていれば測る
+    // (高く跳んで足元が画面外でも計測できる。以前は脚必須で"跳べる人ほど0"になっていた)
+    const hipOk = Math.min(visOf(23), visOf(24)) > 0.4;
+    if (hipOk) {
       if (fs.hipBase === null) fs.hipBase = hipY;
       if (fs.state === "idle") fs.hipBase = fs.hipBase * 0.95 + hipY * 0.05;
     }
-    const jump = lowerOk && fs.hipBase !== null ? Math.max(0, (fs.hipBase - hipY) / bodyH) : 0;
+    const jump = hipOk && fs.hipBase !== null ? Math.max(0, (fs.hipBase - hipY) / bodyH) : 0;
 
     if (fs.state === "idle" && wristH > 0.05 && tMs - fs.lastRepAt > 800) {
       fs.state = "swing";
@@ -2028,7 +2032,7 @@ export default function MomentumCoach() {
                     </div>
                   );
                 })}
-                <div style={{ fontSize: 9, color: C.dim, marginTop: 4, lineHeight: 1.6 }}>赤い項目が伸びしろ。目標値: 振り6.0 / 打点+38% / 引き90°以下 / 伸び170° / 沈み110°以下 / 跳+25%</div>
+                <div style={{ fontSize: 9, color: C.dim, marginTop: 4, lineHeight: 1.6 }}>赤い項目が伸びしろ。目標値: 振り8.0 / 打点+45% / 引き85°以下 / 伸び175° / 沈み95°以下 / 跳+28%</div>
               </div>
             )}
             {reps.length === 0 ? (
