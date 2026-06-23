@@ -485,21 +485,20 @@ const dist3 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, (a.z ?? 0) - (b.z ?? 0)
 // 採点の内訳(満点100の配点と、各項目で実際に獲得した点)。採点UIと同じ単一の真実源。
 function repBreakdown(r) {
   const c01 = v => Math.min(1, Math.max(0, v));
+  // 採点はインパクト姿勢の角度・高さ(信頼できる計測)のみで100点。配点合計=100。
+  // 振り速度とジャンプは単眼スマホでは計測が不安定なため "参考値(info)" として表示のみ(採点外)。
   return [
-    // 配点と目標値を再調整: ノイズの大きい振り速度の比重を下げ、打点・ジャンプ(技術/身体能力)を厚く。
-    // 飽和しやすい項目は目標値を厳しくして差がつくように。
-    { key: "振りの速さ", earned: c01(((r.maxSpeed ?? 0) - 2) / 6) * 16, max: 16, val: `${(r.maxSpeed ?? 0).toFixed(1)}`, unit: "", goal: "8.0", lower: false },
-    { key: "打点の高さ", earned: c01((r.maxWristH - 0.18) / 0.27) * 25, max: 25, val: `+${Math.round(r.maxWristH * 100)}`, unit: "%", goal: "+45%", lower: false },
-    { key: "テイクバック", earned: c01((135 - (r.minElbow ?? 150)) / 50) * 14, max: 14, val: `${Math.round(r.minElbow ?? 150)}`, unit: "°", goal: "85°以下", lower: true },
-    { key: "肘の伸び", earned: c01(((r.elbowAtMax ?? 120) - 120) / 55) * 15, max: 15, val: `${Math.round(r.elbowAtMax ?? 120)}`, unit: "°", goal: "175°", lower: false },
-    { key: "沈み込み", earned: c01((140 - r.minKnee) / 45) * 12, max: 12, val: `${Math.round(r.minKnee)}`, unit: "°", goal: "95°以下", lower: true },
-    { key: "ジャンプ", earned: c01(((r.maxJump ?? 0) - 0.05) / 0.23) * 18, max: 18, missing: (r.maxJump ?? 0) < 0.03, val: `${Math.round((r.maxJump ?? 0) * 100)}`, unit: "%", goal: "+28%", lower: false },
+    { key: "打点の高さ", earned: c01((r.maxWristH - 0.18) / 0.27) * 35, max: 35, val: `+${Math.round(r.maxWristH * 100)}`, unit: "%", goal: "+45%", lower: false },
+    { key: "肘の伸び", earned: c01(((r.elbowAtMax ?? 120) - 120) / 55) * 25, max: 25, val: `${Math.round(r.elbowAtMax ?? 120)}`, unit: "°", goal: "175°", lower: false },
+    { key: "テイクバック", earned: c01((135 - (r.minElbow ?? 150)) / 50) * 20, max: 20, val: `${Math.round(r.minElbow ?? 150)}`, unit: "°", goal: "85°以下", lower: true },
+    { key: "沈み込み", earned: c01((140 - r.minKnee) / 45) * 20, max: 20, val: `${Math.round(r.minKnee)}`, unit: "°", goal: "95°以下", lower: true },
+    { key: "振りの速さ", info: true, val: `${(r.maxSpeed ?? 0).toFixed(1)}`, unit: "", goal: "参考" },
+    { key: "ジャンプ", info: true, missing: (r.maxJump ?? 0) < 0.03, val: `${Math.round((r.maxJump ?? 0) * 100)}`, unit: "%", goal: "参考" },
   ];
 }
-// 計測できなかった項目(例: 高く跳んで頭が画面外→ジャンプ計測不可)は「0点」ではなく
-// 「データ無し」として採点から除外し、測れた項目だけで100点満点に再正規化する。
+// 採点は info(参考値)を除いた項目で算出。合計max=100なので実質そのまま、念のため再正規化。
 function repScore(r) {
-  const items = repBreakdown(r).filter(b => !b.missing);
+  const items = repBreakdown(r).filter(b => !b.info && !b.missing);
   const maxSum = items.reduce((s, b) => s + b.max, 0) || 1;
   return Math.round(items.reduce((s, b) => s + b.earned, 0) / maxSum * 100);
 }
@@ -2023,21 +2022,21 @@ export default function MomentumCoach() {
               <div style={{ background: "#EEF2FA", borderRadius: 14, padding: "10px 12px", marginBottom: 10 }}>
                 <div style={{ fontSize: 10, color: C.dim, fontWeight: 800, marginBottom: 8 }}>📋 採点の内訳 — どこで点を取れて、どこで落としたか</div>
                 {repBreakdown({ maxSpeed: repAvg.speed, maxWristH: repAvg.hit, minElbow: repAvg.cock, elbowAtMax: repAvg.elbow, minKnee: repAvg.knee, maxJump: repAvg.jump }).map(b => {
-                  const ratio = b.earned / b.max;
-                  const col = b.missing ? C.dim : ratio >= 0.7 ? C.ok : ratio >= 0.4 ? C.warn : C.them;
+                  const ratio = b.info ? 0 : b.earned / b.max;
+                  const col = b.info ? C.dim : ratio >= 0.7 ? C.ok : ratio >= 0.4 ? C.warn : C.them;
+                  const valText = (b.info && b.missing) ? "—" : `${b.val}${b.unit}`;
                   return (
-                    <div key={b.key} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, opacity: b.missing ? 0.6 : 1 }}>
+                    <div key={b.key} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, opacity: b.info ? 0.65 : 1 }}>
                       <span style={{ width: 72, fontSize: 11, fontWeight: 700 }}>{b.key}</span>
-                      <span style={{ fontFamily: "'Baloo 2'", fontSize: 12, width: 42, textAlign: "right", color: col }}>{b.missing ? "—" : `${b.val}${b.unit}`}</span>
+                      <span style={{ fontFamily: "'Baloo 2'", fontSize: 12, width: 42, textAlign: "right", color: col }}>{valText}</span>
                       <span style={{ flex: 1, height: 9, background: "#FFFFFF", borderRadius: 5, overflow: "hidden", position: "relative" }}>
-                        {!b.missing && <span style={{ display: "block", height: "100%", width: `${ratio * 100}%`, background: col, borderRadius: 5, transition: "width .4s" }} />}
+                        {!b.info && <span style={{ display: "block", height: "100%", width: `${ratio * 100}%`, background: col, borderRadius: 5, transition: "width .4s" }} />}
                       </span>
-                      <span style={{ fontFamily: "'Baloo 2'", fontSize: 11, width: 38, textAlign: "right", color: C.dim }}>{b.missing ? "計測不可" : `${Math.round(b.earned)}/${b.max}`}</span>
+                      <span style={{ fontFamily: "'Baloo 2'", fontSize: 11, width: 44, textAlign: "right", color: C.dim }}>{b.info ? "参考" : `${Math.round(b.earned)}/${b.max}`}</span>
                     </div>
                   );
                 })}
-                {repAvg.jump < 0.03 && <div style={{ fontSize: 9, color: C.warn, marginTop: 4, lineHeight: 1.6 }}>⚠ ジャンプが計測できていません(高く跳んで頭/足が画面外に出た可能性)。少し引いて全身が余裕で収まる位置で撮ると測れます。今回はジャンプを除いて採点しています。</div>}
-                <div style={{ fontSize: 9, color: C.dim, marginTop: 4, lineHeight: 1.6 }}>赤い項目が伸びしろ。目標値: 振り8.0 / 打点+45% / 引き85°以下 / 伸び175° / 沈み95°以下 / 跳+28%</div>
+                <div style={{ fontSize: 9, color: C.dim, marginTop: 4, lineHeight: 1.6 }}>採点はインパクト姿勢(打点・肘の伸び・テイクバック・沈み込み)で100点。振り速度とジャンプはスマホでの計測が不安定なため<b>参考値(採点対象外)</b>です。目標値: 打点+45% / 伸び175° / 引き85°以下 / 沈み95°以下</div>
               </div>
             )}
             {reps.length === 0 ? (
