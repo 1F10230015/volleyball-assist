@@ -460,9 +460,19 @@ const POSE_MODELS = {
 // 計測に必須のランドマーク(鼻・手首・膝・足首)。これらの可視性が低いフレームは計測除外
 const KEY_VIS_POINTS = [0, 15, 16, 25, 26, 27, 28];
 // 骨格EMA平滑化: 体幹・脚は滑らか重視、腕・手首は追従重視(一律に強くかけるとスイング速度・打点が潰れる)
-const SMOOTH_ALPHA = 0.5;
-const SMOOTH_ALPHA_FAST = 0.8;
-const FAST_POINTS = new Set([13, 14, 15, 16]); // 肘・手首
+// ★One Euro Filter(実時間ポーズ推定の業界標準ノイズ除去)。
+// 低速時は強く平滑化してジッタを除去し、高速時は平滑化を弱めて遅れ(打点・スイングの潰れ)を防ぐ
+// =速度適応。固定EMA(ジッタを拾うか動きを潰すかの二択)より角度・高さの計測が安定する。
+const OE_MINCUT = 4.0, OE_BETA = 1.5, OE_DCUT = 1.0;
+const oeAlpha = (dt, cutoff) => { const tau = 1 / (2 * Math.PI * cutoff); return 1 / (1 + tau / dt); };
+// 1座標ぶんのOne Euro更新。前回の平滑値prevVと平滑微分prevDから新しい{v,d}を返す
+function oeStep(prevV, prevD, raw, dt) {
+  const dRaw = (raw - prevV) / dt;
+  const aD = oeAlpha(dt, OE_DCUT);
+  const d = aD * dRaw + (1 - aD) * prevD;
+  const aX = oeAlpha(dt, OE_MINCUT + OE_BETA * Math.abs(d));
+  return { v: aX * raw + (1 - aX) * prevV, d };
+}
 // 1回のスパイク中、助走バックスイングと打撃が別々に検出されるのを防ぐ統合窓(ms)。
 // この時間内に起きた複数の検出はまとめ、最も高く手が到達した1本(=ボールを打つ瞬間)だけ採用する。
 const SWING_MERGE_MS = 900;
@@ -1038,9 +1048,11 @@ export default function MomentumCoach() {
   const processFrame = (lm, wl, tMs) => {
     const fs = frameRef.current;
     // 実効fps(EMA)。低fps時の精度低下をユーザーが把握できるよう表示する
+    let dt = 1 / 30;
     if (fs.lastT != null && tMs > fs.lastT) {
       const inst = 1000 / (tMs - fs.lastT);
       fs.fps = fs.fps ? fs.fps * 0.9 + inst * 0.1 : inst;
+      dt = Math.min(0.1, Math.max(0.005, (tMs - fs.lastT) / 1000)); // 一時停止後の巨大dtをクランプ
     }
     fs.lastT = tMs;
     // ★検出クラスタの確定: 統合窓を過ぎて次の動作が来なければ、溜めていた代表1本を記録
@@ -1048,21 +1060,24 @@ export default function MomentumCoach() {
       const p = fs.pending; fs.pending = null;
       setReps(rs => [...rs, { ...p, score: repScore(p), t: Date.now() }].slice(-30));
     }
-    // ★EMA平滑化: ジッタ(骨格のブレ)による誤計測・誤検出を抑える
-    if (!fs.smooth) fs.smooth = lm.map(p => ({ x: p.x, y: p.y }));
+    // ★One Euro Filterで2D骨格を平滑化(速度適応:静止時はジッタ除去、速いスイングは潰さない)
+    if (!fs.smooth) { fs.smooth = lm.map(p => ({ x: p.x, y: p.y })); fs.d2 = lm.map(() => ({ x: 0, y: 0 })); }
     else lm.forEach((p, i) => {
-      const a = FAST_POINTS.has(i) ? SMOOTH_ALPHA_FAST : SMOOTH_ALPHA;
-      const s = fs.smooth[i]; s.x += (p.x - s.x) * a; s.y += (p.y - s.y) * a;
+      const s = fs.smooth[i], d = fs.d2[i];
+      const rx = oeStep(s.x, d.x, p.x, dt); s.x = rx.v; d.x = rx.d;
+      const ry = oeStep(s.y, d.y, p.y, dt); s.y = ry.v; d.y = ry.d;
     });
     const pts = fs.smooth;
 
-    // ★3Dワールド座標も平滑化(肘・膝角度と振り速度を視点に依存せず計測するため)
+    // ★3Dワールド座標も同様にOne Euroで平滑化(肘・膝角度・振り速度を視点非依存で計測)
     let w = null;
     if (wl) {
-      if (!fs.smoothW) fs.smoothW = wl.map(p => ({ x: p.x, y: p.y, z: p.z }));
+      if (!fs.smoothW) { fs.smoothW = wl.map(p => ({ x: p.x, y: p.y, z: p.z })); fs.d3 = wl.map(() => ({ x: 0, y: 0, z: 0 })); }
       else wl.forEach((p, i) => {
-        const a = FAST_POINTS.has(i) ? SMOOTH_ALPHA_FAST : SMOOTH_ALPHA;
-        const s = fs.smoothW[i]; s.x += (p.x - s.x) * a; s.y += (p.y - s.y) * a; s.z += (p.z - s.z) * a;
+        const s = fs.smoothW[i], d = fs.d3[i];
+        const rx = oeStep(s.x, d.x, p.x, dt); s.x = rx.v; d.x = rx.d;
+        const ry = oeStep(s.y, d.y, p.y, dt); s.y = ry.v; d.y = ry.d;
+        const rz = oeStep(s.z, d.z, p.z, dt); s.z = rz.v; d.z = rz.d;
       });
       w = fs.smoothW;
     }
@@ -1134,7 +1149,7 @@ export default function MomentumCoach() {
         fs.state = "idle"; fs.lastRepAt = tMs;
         // ★誤検出フィルタ: 高さ(打点に届いた)+速度(振った)+持続時間(瞬間ノイズでない)を満たすものだけ採用
         // → 「ただ手を挙げただけ」「一瞬の検出ブレ」はカウントしない。速度1.2は低fps端末でも本物のスイングを通す値
-        if (r.maxWristH > 0.10 && r.maxSpeed >= 1.2 && tMs - r.startT >= 120) {
+        if (r.maxWristH > 0.10 && r.maxSpeed >= 0.5 && tMs - r.startT >= 120) {
           // 統合窓内に複数検出されたら、最も高く到達した1本(=ボールを打つ瞬間)だけを代表に残す。
           // これで助走のバックスイングは別カウントされず、打撃の1本だけが採点される。
           if (!fs.pending || r.maxWristH > fs.pending.maxWristH) fs.pending = r;
@@ -1230,14 +1245,16 @@ export default function MomentumCoach() {
   // フォームラボを離れたら必ずカメラ・解析を停止
   useEffect(() => { if (mode !== "form") stopForm(); }, [mode]); // eslint-disable-line
 
+  // 集計は平均でなく中央値(1本の誤検出に引きずられないロバスト統計)
+  const median = arr => { const a = [...arr].sort((x, y) => x - y); const m = a.length >> 1; return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2; };
   const repAvg = reps.length ? {
-    score: reps.reduce((s, r) => s + r.score, 0) / reps.length,
-    hit: reps.reduce((s, r) => s + r.maxWristH, 0) / reps.length,
-    elbow: reps.reduce((s, r) => s + r.elbowAtMax, 0) / reps.length,
-    knee: reps.reduce((s, r) => s + r.minKnee, 0) / reps.length,
-    jump: reps.reduce((s, r) => s + r.maxJump, 0) / reps.length,
-    speed: reps.reduce((s, r) => s + (r.maxSpeed ?? 0), 0) / reps.length,
-    cock: reps.reduce((s, r) => s + (r.minElbow ?? 150), 0) / reps.length,
+    score: median(reps.map(r => r.score)),
+    hit: median(reps.map(r => r.maxWristH)),
+    elbow: median(reps.map(r => r.elbowAtMax)),
+    knee: median(reps.map(r => r.minKnee)),
+    jump: median(reps.map(r => r.maxJump)),
+    speed: median(reps.map(r => r.maxSpeed ?? 0)),
+    cock: median(reps.map(r => r.minElbow ?? 150)),
     n: reps.length,
   } : null;
 
