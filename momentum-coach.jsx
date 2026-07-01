@@ -216,6 +216,82 @@ function next3Outcome(log, fromIndex) {
   return { won: after.filter(r => r.e === 1).length, n: after.length };
 }
 
+// ====== ★研究用: TOごとの状況タグ+直後結果を分析用CSVに書き出す ======
+// 保存済みログから「TO 1件=1行」を復元し、状況(点差・連続失点・M値・サーブ権・警戒度・推奨有無)と
+// 直後の結果(次3本得点数・ラン停止・モメンタム回復)をタグ付け。平均回帰対策に「TOを取らなかった
+// 同等状況(連続失点2〜3本)」の対照行も出力する。TO効果の検証(推奨TO vs 勘/無視 vs 対照)に使う。
+function buildAnalysisCsv(entries) {
+  const dummy = () => "";
+  const rows = [];
+  const mAfterN = (log, series, fromIndex, n) => {
+    let c = 0, idx = fromIndex;
+    for (let j = fromIndex; j < log.length; j++) { if (log[j].type === "rally") { c++; idx = j + 1; if (c >= n) break; } }
+    return series[Math.min(idx, series.length - 1)] ?? 0;
+  };
+  const runStop = (log, fromIndex) => {
+    const nxt = log.slice(fromIndex).filter(r => r.type === "rally").slice(0, 2);
+    return nxt.length && nxt.some(r => r.e === 1) ? 1 : 0;
+  };
+  (entries || []).forEach(e => {
+    (e.sets || []).forEach(s => {
+      const log = s.log || [];
+      if (!log.length) return;
+      const series = momentumSeries(log, 0.45);
+      // 各イベント直前の score / streak を前計算
+      const bU = [], bT = [], bS = [];
+      let us = 0, them = 0, streak = 0;
+      for (let i = 0; i < log.length; i++) {
+        bU[i] = us; bT[i] = them; bS[i] = streak;
+        const r = log[i];
+        if (r.type === "rally") { if (r.e === 1) { us++; streak = 0; } else { them++; streak++; } }
+      }
+      bU[log.length] = us; bT[log.length] = them; bS[log.length] = streak;
+      // 各indexのサーブ権(近傍ラリーのservingAtStart)
+      const serv = new Array(log.length + 1).fill("us"); let ls = "us";
+      for (let i = log.length - 1; i >= 0; i--) { if (log[i].type === "rally" && log[i].servingAtStart) ls = log[i].servingAtStart; serv[i] = ls; }
+      serv[log.length] = ls;
+
+      const emit = (p, ev, outFrom) => {
+        const m = series[p] ?? 0;
+        const dM = m - (series[Math.max(0, p - 4)] ?? 0);
+        const th = assessThreat(log.slice(0, p), bU[p], bT[p], dummy, 0.45, 25);
+        let lastLoss = "";
+        for (let j = p - 1; j >= 0; j--) { if (log[j].type === "rally") { if (log[j].e === -1) lastLoss = log[j].play; break; } }
+        const o = next3Outcome(log, outFrom) || { won: 0, n: 0 };
+        const rec = mAfterN(log, series, outFrom, 3) > m ? 1 : 0;
+        rows.push({
+          match: e.label || "", source: e.source || "", set: s.setNo || "",
+          event: ev, us: bU[p], them: bT[p], margin: bU[p] - bT[p], streak: bS[p],
+          m: m.toFixed(2), dM: dM.toFixed(2), serving: serv[p] === "us" ? "自" : "相手",
+          threat: th.score.toFixed(1), recommended: th.score >= LOCAL_ALERT_THRESHOLD ? 1 : 0,
+          w3: o.won, n3: o.n, runStop: runStop(log, outFrom), momRec: rec,
+        });
+      };
+      for (let i = 0; i < log.length; i++) {
+        const r = log[i];
+        if (r.type === "timeout") {
+          emit(i, (r.team ?? "us") === "us" ? "自TO" : "相手TO", i + 1);
+        } else if (r.type === "rally") {
+          // 対照(TOなし): このラリー後の連続失点が2〜3本で、直後がTOでない場面
+          const after = bS[i + 1];
+          if ((after === 2 || after === 3) && !(log[i + 1] && log[i + 1].type === "timeout")) {
+            const o = next3Outcome(log, i + 1);
+            if (o && o.n > 0) emit(i + 1, "対照", i + 1);
+          }
+        }
+      }
+    });
+  });
+  const cols = [["match", "試合名"], ["source", "種別"], ["set", "セット"], ["event", "イベント"],
+    ["us", "自得点"], ["them", "相手得点"], ["margin", "点差"], ["streak", "連続失点"],
+    ["m", "モメンタムM"], ["dM", "ΔM"], ["serving", "サーブ"], ["threat", "警戒度"],
+    ["recommended", "推奨"], ["w3", "直後3本得点"], ["n3", "直後3本総数"], ["runStop", "ラン停止"], ["momRec", "M回復"]];
+  const esc = v => { const s = String(v ?? ""); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+  const head = cols.map(c => c[1]).join(",");
+  const body = rows.map(r => cols.map(c => esc(r[c[0]])).join(",")).join("\n");
+  return "﻿" + head + "\n" + body; // BOM付き(Excelの日本語文字化け防止)
+}
+
 function calibrateWeights(logs) {
   let losses = [], inRush = [];
   for (const log of logs) {
@@ -968,6 +1044,15 @@ export default function MomentumCoach() {
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = `volleyball_learning_${Date.now()}.json`;
+    a.click();
+  };
+  // ★研究用: TO効果の分析CSVを書き出す
+  const exportAnalysisCsv = () => {
+    const csv = buildAnalysisCsv(learnEntries);
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `volleyball_TO_analysis_${Date.now()}.csv`;
     a.click();
   };
 
@@ -1887,9 +1972,15 @@ export default function MomentumCoach() {
               <input type="file" accept=".json,application/json" onChange={handleImport} style={{ display: "none" }} />
             </label>
             {importMsg && <div style={{ fontSize: 11, fontWeight: 800, color: importMsg.startsWith("✓") ? C.ok : C.warn, marginBottom: 8, textAlign: "center" }}>{importMsg}</div>}
-            <button style={btn(C.surf, { color: C.txt, fontSize: 13, padding: "12px 8px", marginBottom: 10 })} onClick={exportLearn} disabled={!learnEntries.length}>
+            <button style={btn(C.surf, { color: C.txt, fontSize: 13, padding: "12px 8px", marginBottom: 8 })} onClick={exportLearn} disabled={!learnEntries.length}>
               💾 学習データ一式をエクスポート
             </button>
+            <button style={btn(`linear-gradient(160deg, ${C.ok}, #1f9e73)`, { fontSize: 13, padding: "12px 8px", marginBottom: 10 })} onClick={exportAnalysisCsv} disabled={!learnEntries.length}>
+              📊 TO効果の分析CSVを書き出す(研究用)
+            </button>
+            <div style={{ fontSize: 10, color: C.dim, marginBottom: 8, lineHeight: 1.7 }}>
+              各タイムアウトと「TOを取らなかった同等状況(対照)」を1行ずつ、状況(点差・連続失点・M値・サーブ権・警戒度・推奨有無)と直後結果(次3本得点・ラン停止・M回復)付きで出力。Excel等で「推奨TO vs 勘/無視 vs 対照」を比較できます。
+            </div>
             {learnEntries.length === 0 ? (
               <div style={{ fontSize: 11, color: C.dim }}>保存された試合はありません。</div>
             ) : learnEntries.map(e => (
