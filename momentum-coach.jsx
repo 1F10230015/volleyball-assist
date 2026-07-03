@@ -669,6 +669,56 @@ function speak(text) {
   } catch { /* 非対応環境は無視 */ }
 }
 
+// ====== ★演出エンジン: コーチの人格・ライブ実況・名場面検出 ======
+// 「反応するだけのUI」から「一緒に戦うキャラクター」へ。すべてルールベース(API不要)で、
+// 状態(モメンタム・崩壊リスク・局面)に応じて表情とセリフが変わる。セリフはラリー数で巡回し毎回変化。
+const COACH_LINES = {
+  storm: ["嵐が来てる…一回深呼吸だ!", "ここが踏ん張りどころ。全員で拾うぞ!", "落ち着け、1本ずつ取り返せばいい!"],
+  danger: ["雲行きが怪しい…サーブカット集中!", "流れが向こうに行きかけてる。声を出せ!", "次の1本、丁寧にいこう。"],
+  bad: ["まだ慌てる場面じゃない。基本に戻ろう。", "1本返せば流れは戻るぞ。", "繋ぎを大事に、リズムを作り直そう。"],
+  flat: ["さあ、ここから流れを掴むぞ。", "最初のサーブカットが鍵だ。", "集中していこう。楽しむのを忘れるな。"],
+  good: ["いい流れだ、このまま!", "相手が焦ってきたぞ。", "攻め続けろ、手を緩めるな!"],
+  hot: ["最高の流れだ!畳みかけろ!", "完全にうちのペースだ!", "この勢い、誰にも止められないぞ!"],
+  deuce: ["デュースだ。1本ずつ、確実に!", "ここからは心臓勝負。楽しんだ者勝ちだ!"],
+  spUs: ["セットポイント!思い切っていけ!", "あと1本。いつも通りでいい!"],
+  spThem: ["崖っぷちだが、1本返せば分からんぞ!", "開き直っていこう。失うものはない!"],
+};
+// ライブ実況(ルールベース)。{n}=選手名。得点/失点×プレー種別ごとにセリフを巡回
+const TICKER_LINES = {
+  win: {
+    "スパイク": ["{n}のスパイクが炸裂!", "{n}、強打で仕留めた!", "{n}のアタックがコートに突き刺さる!"],
+    "サービスエース": ["サービスエース!{n}、値千金の1本!", "{n}のサーブが走る!"],
+    "ブロック": ["{n}の鉄壁ブロック!シャットアウト!", "止めた!{n}の壁がそびえ立つ!"],
+    "相手エラー": ["相手のミスを誘った。いい圧力だ!", "相手エラー!流れはこっちだ!"],
+  },
+  lose: {
+    "被スパイク": ["{n}に決められた…切り替えよう。", "{n}の強打、拾えず。"],
+    "被サーブ": ["{n}のサーブに崩された。カット修正だ。", "サーブで崩される…並びを確認しよう。"],
+    "被ブロック": ["{n}のブロックに捕まった。", "壁が高い…コースを散らそう。"],
+    "自滅エラー": ["痛いミス…次で取り返そう。", "エラーが出た。落ち着いていこう。"],
+  },
+};
+// 名場面の自動検出: セットごとのログから「連続得点」「連鎖を止めた」「逆転」「デュース制覇」を抽出
+function detectHighlights(sets) {
+  const out = [];
+  (sets || []).forEach(s => {
+    const rs = (s.log || []).filter(r => r.type === "rally");
+    let us = 0, them = 0, winRun = 0, lossRun = 0, maxWinRun = 0, stopped = 0, maxDef = 0;
+    rs.forEach(r => {
+      if (r.e === 1) { us++; winRun++; maxWinRun = Math.max(maxWinRun, winRun); if (lossRun >= 4) stopped = Math.max(stopped, lossRun); lossRun = 0; }
+      else { them++; lossRun++; winRun = 0; }
+      maxDef = Math.max(maxDef, them - us);
+    });
+    const setNo = s.setNo || "?";
+    if (maxWinRun >= 5) out.push({ e: "🔥", t: `${maxWinRun}連続得点`, d: `SET${setNo}` });
+    if (stopped >= 4) out.push({ e: "🧯", t: `${stopped}連続失点を止めた`, d: `SET${setNo}` });
+    if (s.winner === "us" && maxDef >= 4) out.push({ e: "⚡", t: `${maxDef}点差から逆転`, d: `SET${setNo}` });
+    const tgt = (s.us > 20 || s.them > 20) ? 25 : 15; // 先取点数の推定(未保存の旧データ互換)
+    if (s.winner === "us" && s.them >= tgt - 1 && s.us - s.them === 2) out.push({ e: "👑", t: "デュースを制した", d: `SET${setNo}` });
+  });
+  return out;
+}
+
 let pid = 0;
 
 export default function MomentumCoach() {
@@ -692,6 +742,7 @@ export default function MomentumCoach() {
   const [apiKey, setApiKey] = useState(() => { try { return localStorage.getItem(API_KEY_KEY) || ""; } catch { return ""; } });
   const [subbing, setSubbing] = useState(null); // 選手交代フロー {team?, out?, name?}
   const [forecastOpen, setForecastOpen] = useState(false); // 予報パネルの手動展開
+  const [ticker, setTicker] = useState(null); // ライブ実況の最新1行
   const [selSlot, setSelSlot] = useState(null);
   const [editNames, setEditNames] = useState({ us: false, them: false });
   const [scoutRep, setScoutRep] = useState(null);
@@ -785,6 +836,7 @@ export default function MomentumCoach() {
     [log.length, lp, mode, setEnd] // eslint-disable-line
   );
 
+
   // ★連続利用日数を記録(初回マウント時)。利用日を localStorage に貯めて連続日数を算出
   useEffect(() => {
     try {
@@ -821,6 +873,21 @@ export default function MomentumCoach() {
   const isDeuce = us >= setTarget - 1 && them >= setTarget - 1;
   const setPointUs = !setEnd && us >= setTarget - 1 && us - them >= 1;
   const setPointThem = !setEnd && them >= setTarget - 1 && them - us >= 1;
+
+  // ★コーチの人格: 局面(デュース/セットポイント)>リスク>モメンタムの優先で表情とセリフを決定
+  const coach = (() => {
+    const risk = forecast?.risk ?? 0;
+    const pick = (face, key) => { const pool = COACH_LINES[key]; return { face, line: pool[rallies.length % pool.length] }; };
+    if (setPointThem) return pick("😤", "spThem");
+    if (setPointUs) return pick("🤩", "spUs");
+    if (isDeuce) return pick("😬", "deuce");
+    if (risk >= 78) return pick("😱", "storm");
+    if (risk >= 55) return pick("😰", "danger");
+    if (m >= 2) return pick("🤩", "hot");
+    if (m >= 0.7) return pick("😄", "good");
+    if (m <= -1 || risk >= 35) return pick("🤔", "bad");
+    return pick("🙂", "flat");
+  })();
 
   let streakDisp = 0;
   for (let i = rallies.length - 1; i >= 0; i--) {
@@ -909,6 +976,16 @@ export default function MomentumCoach() {
       rotUs: rot.us % 6, rotThem: rot.them % 6, servingAtStart: rot.serving,
       wp: +wpAfter.toFixed(3), wpBefore: +wp.toFixed(3),
     }]);
+    // ★ライブ実況: プレー内容+選手名でセリフを生成(同一プレーは「今日n本目!」を加算)
+    const pools = TICKER_LINES[pendingObj.e === 1 ? "win" : "lose"][pendingObj.play];
+    if (pools) {
+      let line = pools[(newUs + newThem) % pools.length].replace("{n}", labelOf(target));
+      if (pendingObj.e === 1 && target.team === "us") {
+        const k = rallies.filter(r => r.e === 1 && r.play === pendingObj.play && tKey(r.target) === tKey(target)).length + 1;
+        if (k >= 2) line += ` 今日${k}本目!`;
+      }
+      setTicker(line);
+    }
     celebrate(pendingObj.e);
     setPending({}); setStep(0);
   };
@@ -953,7 +1030,7 @@ export default function MomentumCoach() {
     if (voiceOn) speak(advice);
     setAlertS(null); setVerdict(null);
   };
-  const manualTimeoutThem = () => setLog(l => [...l, { type: "timeout", team: "them", t: Date.now() }]);
+  const manualTimeoutThem = () => { setLog(l => [...l, { type: "timeout", team: "them", t: Date.now() }]); setTicker("相手ベンチがタイムアウト。うちの流れを嫌がったか。"); };
   // ★選手交代: 控え選手をロスターに追加し、コート上の該当枠を差し替える(記録は履歴・学習へ)
   const confirmSub = () => {
     const { team, out, name } = subbing;
@@ -963,6 +1040,7 @@ export default function MomentumCoach() {
     setRoster(r => ({ ...r, [team]: [...r[team], { pos, name: name.trim() }] }));
     setLineup(l => ({ ...l, [team]: l[team].map(i => i === out ? inIdx : i) }));
     setLog(l => [...l, { type: "sub", team, out, in: inIdx, t: Date.now() }]);
+    setTicker(team === "us" ? `メンバーチェンジ。${name.trim()}、勝負どころで投入!` : "相手がメンバーチェンジ。何か仕掛けてくるぞ。");
     setSubbing(null);
   };
   const dismiss = () => {
@@ -978,7 +1056,7 @@ export default function MomentumCoach() {
   const resetForNewSet = () => {
     setLog([]); setVerdicts([]); setTimeoutsLeft(MAX_TIMEOUTS);
     judgedAt.current = -1; setVerdict(null); setAlertS(null);
-    setSetNo(n => n + 1); setSetEnd(null); setForecastOpen(false);
+    setSetNo(n => n + 1); setSetEnd(null); setForecastOpen(false); setTicker(null);
     setFirstServe(f => f === "us" ? "them" : "us");
   };
   const nextSet = () => { archiveCurrent(setEnd.winner); resetForNewSet(); setMode("setup"); };
@@ -995,7 +1073,7 @@ export default function MomentumCoach() {
       roster, lineup,
     };
     setLearnEntries(es => { const n = [...es, entry]; saveLearnEntries(n); return n; });
-    setMatchTitle(""); archiveCurrent(setEnd.winner); resetForNewSet(); setMode("report");
+    archiveCurrent(setEnd.winner); resetForNewSet(); setMode("report"); // タイトルはシェア画像用に保持(ホーム遷移でクリア)
   };
   const undoFromSetEnd = () => { setSetEnd(null); undo(); };
 
@@ -1003,7 +1081,7 @@ export default function MomentumCoach() {
     setLog([]); setVerdicts([]); setArchived([]); setSetsWon({ us: 0, them: 0 });
     setSetNo(1); setTimeoutsLeft(MAX_TIMEOUTS); setSetEnd(null);
     judgedAt.current = -1; setVerdict(null); setAlertS(null);
-    setMenu(null); setStory(null); setSelSlot(null); setSubbing(null); setForecastOpen(false); setMatchTitle(""); setMode("home");
+    setMenu(null); setStory(null); setSelSlot(null); setSubbing(null); setForecastOpen(false); setMatchTitle(""); setTicker(null); setMode("home");
   };
 
   const deleteEntry = id => setLearnEntries(es => { const n = es.filter(e => e.id !== id); saveLearnEntries(n); return n; });
@@ -1475,6 +1553,72 @@ export default function MomentumCoach() {
     setStoryLoading(false);
   };
 
+  // ★シェア画像: 試合サマリーを1枚のカード画像(PNG)に描いてダウンロード
+  const exportShareImage = () => {
+    const cv = document.createElement("canvas"); cv.width = 1080; cv.height = 1350;
+    const x = cv.getContext("2d");
+    const rr = (px, py, w, h, r) => { x.beginPath(); x.moveTo(px + r, py); x.arcTo(px + w, py, px + w, py + h, r); x.arcTo(px + w, py + h, px, py + h, r); x.arcTo(px, py + h, px, py, r); x.arcTo(px, py, px + w, py, r); x.closePath(); };
+    const F = (w, s) => `${w} ${s}px 'M PLUS Rounded 1c', sans-serif`;
+    // 背景グラデ
+    const g = x.createLinearGradient(0, 0, 0, 1350); g.addColorStop(0, "#4C84FF"); g.addColorStop(1, "#6C5CE7");
+    x.fillStyle = g; x.fillRect(0, 0, 1080, 1350);
+    // ヘッダー
+    x.fillStyle = "rgba(255,255,255,.85)"; x.font = F(800, 30); x.textAlign = "center";
+    x.fillText("🏐 MOMENTUM COACH AI", 540, 88);
+    x.fillStyle = "#fff"; x.font = F(900, 52);
+    const title = (matchTitle.trim() || `${teamName}の試合`).slice(0, 16);
+    x.fillText(title, 540, 168);
+    x.fillStyle = "rgba(255,255,255,.75)"; x.font = F(700, 26);
+    x.fillText(new Date().toLocaleDateString("ja-JP", { year: "numeric", month: "long", day: "numeric" }), 540, 212);
+    // 白カード
+    x.fillStyle = "#FFFFFF"; rr(60, 250, 960, 1010, 36); x.fill();
+    // セットカウント
+    x.fillStyle = "#7E8AA6"; x.font = F(800, 26); x.fillText("セットカウント", 540, 320);
+    x.font = F(900, 120);
+    x.fillStyle = "#4C84FF"; x.textAlign = "right"; x.fillText(String(setsWon.us), 470, 440);
+    x.fillStyle = "#B7C0D2"; x.textAlign = "center"; x.fillText("-", 540, 436);
+    x.fillStyle = "#FF6B6B"; x.textAlign = "left"; x.fillText(String(setsWon.them), 610, 440);
+    x.textAlign = "center"; x.fillStyle = "#7E8AA6"; x.font = F(700, 28);
+    x.fillText(allSets.map(s => `${s.us}-${s.them}`).join("  /  "), 540, 500);
+    // モメンタム曲線(最終セット)
+    const lastSet = allSets[allSets.length - 1];
+    if (lastSet) {
+      const ser = momentumSeries(lastSet.log, toF); const n = ser.length;
+      x.fillStyle = "#7E8AA6"; x.font = F(800, 24); x.fillText("流れ(モメンタム)の推移", 540, 570);
+      x.fillStyle = "#EEF2FA"; rr(120, 592, 840, 190, 20); x.fill();
+      x.strokeStyle = "#E0E6F2"; x.beginPath(); x.moveTo(140, 687); x.lineTo(940, 687); x.stroke();
+      x.strokeStyle = "#4C84FF"; x.lineWidth = 5; x.lineJoin = "round"; x.beginPath();
+      ser.forEach((v, i) => { const px = 140 + (n > 1 ? i / (n - 1) : 0) * 800; const py = 687 - Math.max(-5, Math.min(5, v)) / 5 * 80; i ? x.lineTo(px, py) : x.moveTo(px, py); });
+      x.stroke(); x.lineWidth = 1;
+    }
+    // MVP & ターニングポイント
+    let yy = 850;
+    x.fillStyle = "#EEF2FA"; rr(120, yy - 40, 840, 84, 20); x.fill();
+    x.fillStyle = "#1B2440"; x.font = F(800, 30);
+    const mvp = topWin.length ? `⭐ MVP: ${labelOf(keyToTarget(topWin[0][0]))}(${topWin[0][1]}得点)` : "⭐ 全員で掴んだ試合";
+    x.fillText(mvp.slice(0, 26), 540, yy + 14); yy += 116;
+    if (turningPoints.length) {
+      const t = turningPoints[0];
+      x.fillStyle = "#EEF2FA"; rr(120, yy - 40, 840, 84, 20); x.fill();
+      x.fillStyle = "#1B2440"; x.font = F(800, 28);
+      x.fillText(`⚡ 分岐点: ${t.r.play}(${labelOf(t.r.target)}) 勝率${Math.round(t.r.wpBefore * 100)}%→${Math.round(t.r.wp * 100)}%`.slice(0, 32), 540, yy + 12); yy += 116;
+    }
+    // 名場面
+    const hl = detectHighlights(allSets).slice(0, 3);
+    hl.forEach(h => {
+      x.fillStyle = "#FFF6E6"; rr(120, yy - 40, 840, 78, 20); x.fill();
+      x.fillStyle = "#C57F12"; x.font = F(800, 28);
+      x.fillText(`${h.e} ${h.t}(${h.d})`, 540, yy + 10); yy += 104;
+    });
+    // フッター
+    x.fillStyle = "rgba(255,255,255,.85)"; x.font = F(700, 24);
+    x.fillText("Momentum Coach AI — 流れを読むAIコーチ", 540, 1320);
+    const a = document.createElement("a");
+    a.href = cv.toDataURL("image/png");
+    a.download = `match_${Date.now()}.png`;
+    a.click();
+  };
+
   // ★研究用データエクスポート(JSON)
   const exportData = () => {
     const data = {
@@ -1719,6 +1863,8 @@ export default function MomentumCoach() {
         @keyframes rise { 0%{transform:translate(0,0) rotate(0); opacity:1} 100%{transform:translate(var(--dx), var(--dy)) rotate(var(--rot)); opacity:0} }
         @keyframes slideUp { 0%{transform:translateY(18px); opacity:0} 100%{transform:translateY(0); opacity:1} }
         @keyframes siren { 0%,100%{box-shadow:0 0 0 0 rgba(255,74,61,.8)} 50%{box-shadow:0 0 60px 14px rgba(255,74,61,.55)} }
+        @keyframes rainFall { 0%{transform:translateY(-6vh)} 100%{transform:translateY(108vh)} }
+        @keyframes lightning { 0%,88.5%,91.5%,100%{opacity:0} 89%{opacity:.45} 90%{opacity:.06} 90.7%{opacity:.3} }
         @keyframes floatBall { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-3px)} }
         @keyframes marquee { 0%{background-position:0 0} 100%{background-position:56px 0} }
         @keyframes comboPop { 0%{transform:scale(.4) rotate(-8deg); opacity:0} 60%{transform:scale(1.2) rotate(3deg)} 100%{transform:scale(1)} }
@@ -2511,6 +2657,14 @@ export default function MomentumCoach() {
             )}
           </div>
 
+          {/* ★ライブ実況ティッカー: 直前のプレーへの一言 */}
+          {ticker && !setEnd && (
+            <div key={ticker} style={{ display: "flex", gap: 8, alignItems: "center", background: "#FFFFFF", border: `1px solid ${C.line}`, borderRadius: 14, padding: "8px 12px", fontSize: 12, fontWeight: 800, color: C.txt, animation: "slideUp .25s", boxShadow: "0 4px 12px rgba(40,60,110,.05)" }}>
+              <span style={{ fontSize: 14 }}>🎙</span>
+              <span style={{ flex: 1, lineHeight: 1.5 }}>{ticker}</span>
+            </div>
+          )}
+
           {/* ★ベンチ操作: 手動タイムアウト(チーム別に記録→学習)と選手交代 */}
           {!setEnd && (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
@@ -2563,26 +2717,36 @@ export default function MomentumCoach() {
             </div>
           )}
 
-          {/* ★モメンタム予報: 平常時はスリム、崩れの兆候が出たら自動で展開(タップでも開閉可) */}
+          {/* ★天気演出: 崩壊リスクが高まると画面に雨が降り、警報レベルでは雷が走る */}
+          {forecast && forecast.risk >= 55 && (
+            <div style={{ position: "fixed", inset: 0, pointerEvents: "none", zIndex: 30, overflow: "hidden" }}>
+              <div style={{ position: "absolute", inset: 0, background: `rgba(30,40,70,${forecast.risk >= 78 ? 0.26 : 0.13})`, transition: "background 1s" }} />
+              {Array.from({ length: 22 }, (_, i) => (
+                <span key={i} style={{ position: "absolute", top: -40, left: `${(i * 47 + 13) % 100}%`, width: 2, height: forecast.risk >= 78 ? 26 : 16, borderRadius: 2, background: "rgba(150,180,240,.6)", animation: `rainFall ${(0.7 + (i % 5) * 0.13).toFixed(2)}s linear ${((i * 0.137) % 1).toFixed(2)}s infinite` }} />
+              ))}
+              {forecast.risk >= 78 && <div style={{ position: "absolute", inset: 0, background: "#fff", opacity: 0, animation: "lightning 4.5s infinite" }} />}
+            </div>
+          )}
+
+          {/* ★AIコーチ(人格)+モメンタム予報: コーチの表情とセリフが流れで変わる。タップで詳細予報 */}
           {forecast && (() => {
             const big = forecast.risk >= 35 || forecast.trailing >= 2 || forecastOpen;
             const storm = forecast.risk >= 78;
-            if (!big) {
-              // コンパクト表示: 1行。タップで詳細を開ける
-              return (
-                <button onClick={() => setForecastOpen(true)}
-                  style={{ ...panel, padding: "10px 14px", display: "flex", alignItems: "center", gap: 10, width: "100%", cursor: "pointer", textAlign: "left", color: C.txt, fontFamily: "'M PLUS Rounded 1c', sans-serif", border: `1px solid ${forecast.level.c}33` }}>
-                  <span style={{ fontSize: 20 }}>{forecast.level.i}</span>
-                  <span style={{ fontSize: 12, fontWeight: 900 }}>🌦 モメンタム予報</span>
-                  <span style={{ fontSize: 12, fontWeight: 900, color: forecast.level.c }}>{forecast.level.t}</span>
-                  <span style={{ flex: 1, height: 6, borderRadius: 3, background: "#EEF2FA", overflow: "hidden" }}>
-                    <span style={{ display: "block", height: "100%", width: `${forecast.risk}%`, background: forecast.level.c, borderRadius: 3, transition: "width .5s" }} />
-                  </span>
-                  <span style={{ fontFamily: "'Baloo 2'", fontSize: 14, color: forecast.level.c }}>{forecast.risk}%</span>
-                  <span style={{ fontSize: 13, color: C.dim }}>›</span>
-                </button>
-              );
-            }
+            const coachRow = (
+              <button key="coach" onClick={() => setForecastOpen(o => !o)}
+                style={{ ...panel, padding: "10px 12px", display: "flex", alignItems: "center", gap: 10, width: "100%", cursor: "pointer", textAlign: "left", color: C.txt, fontFamily: "'M PLUS Rounded 1c', sans-serif", border: `1px solid ${forecast.level.c}44` }}>
+                <span style={{ width: 44, height: 44, borderRadius: "50%", background: `${forecast.level.c}22`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, flexShrink: 0, animation: forecast.risk >= 60 ? "pulse 1.2s infinite" : "none" }}>{coach.face}</span>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span key={coach.line} style={{ display: "block", fontSize: 13, fontWeight: 800, lineHeight: 1.45, animation: "slideUp .25s" }}>{coach.line}</span>
+                  <span style={{ display: "block", fontSize: 10, color: C.dim, fontWeight: 700, marginTop: 2 }}>AIコーチ ・ 予報 {forecast.level.t}</span>
+                </span>
+                <span style={{ textAlign: "center", flexShrink: 0 }}>
+                  <span style={{ display: "block", fontSize: 20 }}>{forecast.level.i}</span>
+                  <span style={{ display: "block", fontFamily: "'Baloo 2'", fontSize: 13, color: forecast.level.c }}>{forecast.risk}%</span>
+                </span>
+              </button>
+            );
+            if (!big) return coachRow;
             const cw = 300, ch = 86, padX = 10, padTop = 10;
             const N = cone.length - 1;
             const xs = i => padX + (i / N) * (cw - 2 * padX);
@@ -2591,10 +2755,10 @@ export default function MomentumCoach() {
             const band = [...cone.map((p, i) => `${xs(i)},${ys(p.p90)}`), ...cone.map((p, i) => `${xs(i)},${ys(p.p10)}`).reverse()];
             const mid = cone.map((p, i) => `${i ? "L" : "M"}${xs(i)},${ys(p.p50)}`).join(" ");
             const end = cone[N];
-            return (
+            return (<>
+              {coachRow}
               <div style={{ ...panel, border: `1px solid ${forecast.level.c}55`, animation: storm ? "siren 1.4s infinite" : "slideUp .25s" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <div style={{ fontSize: 38, animation: forecast.risk >= 60 ? "pulse 1.2s infinite" : "floatBall 3s ease-in-out infinite" }}>{forecast.level.i}</div>
                   <div style={{ flex: 1 }}>
                     <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
                       <span style={{ fontSize: 13, fontWeight: 900 }}>🌦 モメンタム予報</span>
@@ -2632,7 +2796,7 @@ export default function MomentumCoach() {
                   このまま進むと{N}本後の点差は <b style={{ color: end.p50 >= 0 ? C.us : C.them }}>{end.p50 >= 0 ? "+" : ""}{end.p50}</b> 前後(楽観{end.p90 >= 0 ? "+" : ""}{end.p90}〜悲観{end.p10 >= 0 ? "+" : ""}{end.p10})。帯が下に膨らむほど崩れの危険。
                 </div>
               </div>
-            );
+            </>);
           })()}
 
           {/* ★鬼門ローテ事前警告 */}
@@ -2696,6 +2860,32 @@ export default function MomentumCoach() {
               <span style={{ color: C.us }}>{setsWon.us}</span><span style={{ color: C.dim }}> - </span><span style={{ color: C.them }}>{setsWon.them}</span>
             </div>
           </div>
+
+          {/* ★名場面カード(自動検出)+ シェア画像 */}
+          {(() => {
+            const hl = detectHighlights(allSets);
+            return (
+              <div style={{ ...panel, border: "1px solid #B66EFF44" }}>
+                <div style={{ fontSize: 12, color: "#7B5BE0", fontWeight: 800, marginBottom: 10 }}>🎴 今日の名場面</div>
+                {hl.length === 0 ? (
+                  <div style={{ fontSize: 12, color: C.dim }}>大型連続得点・逆転・デュース制覇などが起きると、ここに名場面カードが並びます。</div>
+                ) : (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    {hl.map((h, i) => (
+                      <div key={i} style={{ background: "linear-gradient(135deg,#F0EBFF,#EAF1FF)", border: "1px solid #E0D8FF", borderRadius: 16, padding: "10px 14px", textAlign: "center", animation: "zoomIn .3s" }}>
+                        <div style={{ fontSize: 24 }}>{h.e}</div>
+                        <div style={{ fontSize: 12, fontWeight: 900, color: C.txt }}>{h.t}</div>
+                        <div style={{ fontSize: 9, color: C.dim, fontWeight: 700 }}>{h.d}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <button style={btn("linear-gradient(160deg, #6C5CE7, #4C84FF)", { fontSize: 14, padding: "13px 8px", marginTop: 10 })} onClick={exportShareImage} disabled={allSets.length === 0}>
+                  📸 試合サマリー画像を保存(チームに共有)
+                </button>
+              </div>
+            );
+          })()}
 
           {/* ★AI実況ハイライト */}
           <div style={{ ...panel, border: `1px solid ${C.warn}44` }}>
