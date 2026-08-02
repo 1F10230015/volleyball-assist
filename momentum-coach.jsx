@@ -292,6 +292,59 @@ function buildAnalysisCsv(entries) {
   return "﻿" + head + "\n" + body; // BOM付き(Excelの日本語文字化け防止)
 }
 
+// ====== ★研究用(Q1): 流れ指標の予測力を検証する分析CSV ======
+// 各ラリー直前の状態を1行=1標本として出力する。「その時点までの情報だけで作った流れM」と、
+// 「まだ起きていない直後の結果(次1本・次3本)」を並べ、Mが次の展開を予測できるか(Q1)を検証する。
+// ベースライン(単純な直近3本の得点率)も併記し、"重み付け+減衰"がそれを上回るかを比較できる。
+function buildMomentumCsv(entries) {
+  const rows = [];
+  (entries || []).forEach(e => {
+    (e.sets || []).forEach(s => {
+      const log = s.log || [];
+      if (!log.length) return;
+      const series = momentumSeries(log, 0.45); // series[i] = log[0..i-1]まで処理後のM(=iより前の情報のみ)
+      // 各indexのサーブ権(近傍ラリーのservingAtStartを後方から伝播)
+      const serv = new Array(log.length + 1).fill("us"); let ls = "us";
+      for (let i = log.length - 1; i >= 0; i--) { if (log[i].type === "rally" && log[i].servingAtStart) ls = log[i].servingAtStart; serv[i] = ls; }
+      let us = 0, them = 0, streak = 0;
+      const hist = []; // これまでのラリー結果(+1/-1)
+      let rallyNo = 0;
+      for (let i = 0; i < log.length; i++) {
+        const r = log[i];
+        if (r.type !== "rally") continue;
+        rallyNo++;
+        const m = series[i] ?? 0;                       // このラリー直前のM(過去情報のみ)
+        const dM = m - (series[Math.max(0, i - 4)] ?? 0); // 直近4本のMの傾き(勢いの向き)
+        const prev3 = hist.slice(-3);                   // ベースライン用: 直近3本の結果
+        const prevRate = prev3.length ? prev3.filter(x => x === 1).length / prev3.length : "";
+        const nextPoint = r.e === 1 ? 1 : 0;            // 予測対象①: 次の1本を取れたか
+        const o = next3Outcome(log, i) || { won: 0, n: 0 }; // 予測対象②: このラリー含む直後3本
+        const net3 = o.n ? o.won - (o.n - o.won) : "";  // 直後3本の得失点収支
+        rows.push({
+          match: e.label || "", source: e.source || "", set: s.setNo || "", rally: rallyNo,
+          us, them, margin: us - them, streak,
+          serving: serv[i] === "us" ? "自" : "相手",
+          m: m.toFixed(3), dM: dM.toFixed(3),
+          prevRate: prevRate === "" ? "" : prevRate.toFixed(2),
+          nextPoint, w3: o.won, n3: o.n, net3,
+        });
+        // 状態を次ラリーへ更新
+        hist.push(r.e === 1 ? 1 : -1);
+        if (r.e === 1) { us++; streak = 0; } else { them++; streak++; }
+      }
+    });
+  });
+  const cols = [["match", "試合名"], ["source", "種別"], ["set", "セット"], ["rally", "ラリー番号"],
+    ["us", "自得点"], ["them", "相手得点"], ["margin", "点差"], ["streak", "連続失点"],
+    ["serving", "サーブ"], ["m", "流れM(直前)"], ["dM", "ΔM(直近4本)"],
+    ["prevRate", "直近3本得点率(基準)"], ["nextPoint", "次1本取得"],
+    ["w3", "直後3本得点"], ["n3", "直後3本総数"], ["net3", "直後3本収支"]];
+  const esc = v => { const s = String(v ?? ""); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+  const head = cols.map(c => c[1]).join(",");
+  const body = rows.map(r => cols.map(c => esc(r[c[0]])).join(",")).join("\n");
+  return "﻿" + head + "\n" + body; // BOM付き(Excelの日本語文字化け防止)
+}
+
 function calibrateWeights(logs) {
   let losses = [], inRush = [];
   for (const log of logs) {
@@ -1131,6 +1184,15 @@ export default function MomentumCoach() {
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = `volleyball_TO_analysis_${Date.now()}.csv`;
+    a.click();
+  };
+  // ★研究用(Q1): 流れ指標の予測力を検証するCSVを書き出す
+  const exportMomentumCsv = () => {
+    const csv = buildMomentumCsv(learnEntries);
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `volleyball_momentum_analysis_${Date.now()}.csv`;
     a.click();
   };
 
@@ -2122,10 +2184,16 @@ export default function MomentumCoach() {
               💾 学習データ一式をエクスポート
             </button>
             <button style={btn(`linear-gradient(160deg, ${C.ok}, #1f9e73)`, { fontSize: 13, padding: "12px 8px", marginBottom: 10 })} onClick={exportAnalysisCsv} disabled={!learnEntries.length}>
-              📊 TO効果の分析CSVを書き出す(研究用)
+              📊 TO効果の分析CSVを書き出す(研究用 / Q2)
             </button>
             <div style={{ fontSize: 10, color: C.dim, marginBottom: 8, lineHeight: 1.7 }}>
               各タイムアウトと「TOを取らなかった同等状況(対照)」を1行ずつ、状況(点差・連続失点・M値・サーブ権・警戒度・推奨有無)と直後結果(次3本得点・ラン停止・M回復)付きで出力。Excel等で「推奨TO vs 勘/無視 vs 対照」を比較できます。
+            </div>
+            <button style={btn(`linear-gradient(160deg, ${C.us}, #3a6fe0)`, { fontSize: 13, padding: "12px 8px", marginBottom: 10 })} onClick={exportMomentumCsv} disabled={!learnEntries.length}>
+              📈 流れの予測力CSVを書き出す(研究用 / Q1)
+            </button>
+            <div style={{ fontSize: 10, color: C.dim, marginBottom: 8, lineHeight: 1.7 }}>
+              各ラリー直前の「流れM(その時点までの情報のみ)」と、直後の結果(次1本を取れたか・直後3本の得点/収支)を1行ずつ出力。ベースラインの「直近3本得点率」も併記。Mが次の展開を予測できるか(Q1)、単純な直近成績を上回るかを統計検定できます。
             </div>
             {learnEntries.length === 0 ? (
               <div style={{ fontSize: 11, color: C.dim }}>保存された試合はありません。</div>
