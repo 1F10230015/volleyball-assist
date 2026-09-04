@@ -916,7 +916,7 @@ export default function MomentumCoach() {
       { id: "collector", icon: "📚", label: "収集家", got: learnEntries.length >= 5 },
       { id: "r100", icon: "💯", label: "100ラリー", got: ralliesN >= 100 },
       { id: "scout", icon: "📺", label: "観戦者", got: pro >= 1 },
-      { id: "model", icon: "⭐", label: "お手本職人", got: myRefs >= 1 },
+      { id: "veteran", icon: "🏆", label: "10試合", got: learnEntries.length >= 10 },
       { id: "streak3", icon: "🔥", label: "3日継続", got: dayStreak >= 3 },
     ];
     return { own, pro, ralliesN, myRefs, exp, level, into, need, badges, got: badges.filter(b => b.got).length };
@@ -1983,7 +1983,7 @@ export default function MomentumCoach() {
 
           {/* 統計(すべて実データ) */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-            {[["試合数", profile.own, C.us], ["お手本", profile.myRefs, C.warn], ["総ラリー", profile.ralliesN, C.ok]].map(([lbl, v, col]) => (
+            {[["試合数", profile.own, C.us], ["観戦", profile.pro, "#B66EFF"], ["総ラリー", profile.ralliesN, C.ok]].map(([lbl, v, col]) => (
               <div key={lbl} style={{ ...panel, padding: "12px 6px", textAlign: "center" }}>
                 <div style={{ fontFamily: "'Baloo 2'", fontSize: 22, color: col }}>{v}</div>
                 <div style={{ fontSize: 10, color: C.dim, fontWeight: 700 }}>{lbl}</div>
@@ -2013,10 +2013,12 @@ export default function MomentumCoach() {
           <HomeCard emoji="📺" title="観戦・学習モード" accent="#B66EFF"
             desc="プロや春高の試合を動画・観戦しながら記録。データは自動でAIの学習素材になり、判定精度が上がる。"
             onClick={() => { setMatchKind("scout"); setSelSlot(null); setMode("setup"); }} />
+          {/* ▼ AIフォームラボ: 一旦停止(試合分析・リアルタイム提案に集中)。復活時はこのカードのコメントを外すだけ。エンジン/画面コードは下部に温存。
           <HomeCard emoji="🎥" title="AIフォームラボ" accent={C.warn}
             badge="リアルタイム映像AI"
             desc="カメラ・動画から骨格を端末内でリアルタイム解析。スパイク/サーブを自動検出して採点し、プロのお手本と比較。"
             onClick={() => setMode("form")} />
+          */}
           <HomeCard emoji="🧠" title="AI学習センター" accent={C.ok}
             badge={learnEntries.length ? `${learnEntries.length}試合` : null}
             desc="蓄積データからサイドアウト率・プレー重み・TO効果・サーブ順の強さを学習。AI戦術レポートも生成。"
