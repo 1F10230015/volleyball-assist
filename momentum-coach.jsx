@@ -19,6 +19,10 @@ const defaultRoster = () => ({
 // P1=レフトA(0), P2=セッターD(3), P3=センターE(4), P4=レフトB(1), P5=ライトC(2), P6=センターF(5)
 const DIAGONAL_LINEUP = [0, 3, 4, 1, 2, 5];
 const defaultLineup = () => ({ us: [...DIAGONAL_LINEUP], them: [...DIAGONAL_LINEUP] });
+// ★リベロ: チームごとに最大2名登録。コート6人のローテ(lineup/rot)には含めず、後衛守備位置(P5/P6)の
+// 実選手を表示上だけ差し替える「オーバーレイ」として扱う。前衛ローテ・サーブ(P1)時は自動で実選手に戻る。
+// ルーティンな出入りでデータを汚さないため、ログ・モメンタム・交代学習には一切記録しない(プレー実行者としてのみ名前が残る)。
+const defaultLiberos = () => ({ us: [], them: [] });
 
 const PLAYS = {
   win: [
@@ -794,6 +798,9 @@ export default function MomentumCoach() {
   const [learnApply, setLearnApply] = useState(true);
   const [apiKey, setApiKey] = useState(() => { try { return localStorage.getItem(API_KEY_KEY) || ""; } catch { return ""; } });
   const [subbing, setSubbing] = useState(null); // 選手交代フロー {team?, out?, name?}
+  const [liberos, setLiberos] = useState(defaultLiberos); // チーム別リベロ登録(最大2名)
+  const [libCover, setLibCover] = useState({ us: null, them: null }); // {li, pos}: liberos[team][li]がローテ位置posの選手をカバー中
+  const [libFlow, setLibFlow] = useState(null); // リベロ操作フロー {team?, li?}
   const [forecastOpen, setForecastOpen] = useState(false); // 予報パネルの手動展開
   const [ticker, setTicker] = useState(null); // ライブ実況の最新1行
   const [selSlot, setSelSlot] = useState(null);
@@ -849,6 +856,7 @@ export default function MomentumCoach() {
   const judgedAt = useRef(-1);
 
   const labelOf = t => {
+    if (t.libName) return `${t.team === "them" ? "相手" : ""}リベロ・${t.libName}`;
     const p = roster[t.team]?.[t.idx];
     if (!p) return "?";
     return `${t.team === "them" ? "相手" : ""}${p.pos}・${p.name}`;
@@ -871,7 +879,19 @@ export default function MomentumCoach() {
 
   const rot = deriveRotation(log, firstServe);
   const courtIdx = (team, slot) => lineup[team][(rot[team] + slot - 1) % 6];
-  const serverOf = team => roster[team][courtIdx(team, 1)];
+  const serverOf = team => roster[team][courtIdx(team, 1)]; // サーバーは常に実選手(リベロはサーブしない)
+  // ★リベロ: カバー中のローテ位置posが今どのコート枠(1..6)にいるか
+  const slotOfPos = (team, pos) => ((pos - rot[team]) % 6 + 6) % 6 + 1;
+  // そのslotにリベロが立っているか。後衛(P1/P5/P6)に居る時だけ。ただしP1は自チームサーブ時のみ実選手(リベロはサーブ不可)。
+  // 前衛(2,3,4)は常に実選手。相手サーブ時(=自チームがレシーブ)はP1もリベロが守れる。
+  const liberoCanStand = (team, slot) => (slot === 5 || slot === 6 || (slot === 1 && rot.serving !== team));
+  const liberoAt = (team, slot) => {
+    const c = libCover[team];
+    if (!c) return null;
+    const s = slotOfPos(team, c.pos);
+    if (s !== slot || !liberoCanStand(team, slot)) return null;
+    return liberos[team][c.li] || null;
+  };
 
   // ★リアルタイム勝率(モンテカルロ、サーブ権+学習パラメータ+先取点数反映)
   const wp = useMemo(() => winProbSim(us, them, m, rot.serving, lp, setTarget), [log.length, lp, setTarget]); // eslint-disable-line
@@ -1052,7 +1072,7 @@ export default function MomentumCoach() {
     if (p.autoServer === "them") return commitRally(next, { team: "them", idx: courtIdx("them", 1) });
     setPending(next); setStep(2);
   };
-  const tap3 = (team, idx) => commitRally(pending, { team, idx });
+  const tap3 = (team, idx, libName) => commitRally(pending, libName ? { team, idx, libName } : { team, idx });
 
   const undo = () => {
     judgedAt.current = -1; setVerdict(null);
@@ -1111,6 +1131,7 @@ export default function MomentumCoach() {
     judgedAt.current = -1; setVerdict(null); setAlertS(null);
     setSetNo(n => n + 1); setSetEnd(null); setForecastOpen(false); setTicker(null);
     setFirstServe(f => f === "us" ? "them" : "us");
+    setLibCover({ us: null, them: null }); setLibFlow(null); // ローテは毎セット初期化→リベロ割当もリセット(登録名は保持)
   };
   const nextSet = () => { archiveCurrent(setEnd.winner); resetForNewSet(); setMode("setup"); };
   // ★試合終了時、自動でAI学習データに保存(試合モード=own / 観戦モード=pro)
@@ -1123,7 +1144,7 @@ export default function MomentumCoach() {
       source: matchKind === "scout" ? "pro" : "own",
       label: matchTitle.trim() || def,
       sets: finalSets.map(s => ({ setNo: s.setNo, us: s.us, them: s.them, winner: s.winner, log: s.log })),
-      roster, lineup,
+      roster, lineup, liberos,
     };
     setLearnEntries(es => { const n = [...es, entry]; saveLearnEntries(n); return n; });
     archiveCurrent(setEnd.winner); resetForNewSet(); setMode("report"); // タイトルはシェア画像用に保持(ホーム遷移でクリア)
@@ -1134,7 +1155,8 @@ export default function MomentumCoach() {
     setLog([]); setVerdicts([]); setArchived([]); setSetsWon({ us: 0, them: 0 });
     setSetNo(1); setTimeoutsLeft(MAX_TIMEOUTS); setSetEnd(null);
     judgedAt.current = -1; setVerdict(null); setAlertS(null);
-    setMenu(null); setStory(null); setSelSlot(null); setSubbing(null); setForecastOpen(false); setMatchTitle(""); setTicker(null); setMode("home");
+    setMenu(null); setStory(null); setSelSlot(null); setSubbing(null); setForecastOpen(false); setMatchTitle(""); setTicker(null);
+    setLiberos(defaultLiberos()); setLibCover({ us: null, them: null }); setLibFlow(null); setMode("home");
   };
 
   const deleteEntry = id => setLearnEntries(es => { const n = es.filter(e => e.id !== id); saveLearnEntries(n); return n; });
@@ -1781,7 +1803,7 @@ export default function MomentumCoach() {
     );
   };
 
-  const CourtSelect = ({ team, onPick }) => {
+  const CourtSelect = ({ team, onPick, pickSlot }) => {
     const slots = [[4, 3, 2], [5, 6, 1]];
     const serving = rot.serving === team;
     return (
@@ -1791,25 +1813,27 @@ export default function MomentumCoach() {
           <div key={ri} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 8 }}>
             {row.map(slot => {
               const idx = courtIdx(team, slot);
-              const p = roster[team][idx];
+              const lib = liberoAt(team, slot);
+              const p = lib ? { pos: "リベロ", name: lib.name } : roster[team][idx];
               const isServer = slot === 1 && serving;
+              const pickable = !pickSlot || liberoCanStand(team, slot); // リベロ割当時は後衛(P1/P5/P6。P1は相手サーブ時)のみ選択可
               return (
-                <button key={slot}
-                  style={btn(team === "us" ? "linear-gradient(160deg, #2a3f6e, #1e2d50)" : "linear-gradient(160deg, #5e2a33, #45202a)", {
-                    padding: "12px 4px", fontSize: 14,
-                    border: isServer ? `2px solid ${C.warn}` : "2px solid transparent",
+                <button key={slot} disabled={!pickable}
+                  style={btn(lib ? "linear-gradient(160deg, #6a4a1e, #4a3414)" : team === "us" ? "linear-gradient(160deg, #2a3f6e, #1e2d50)" : "linear-gradient(160deg, #5e2a33, #45202a)", {
+                    padding: "12px 4px", fontSize: 14, opacity: pickable ? 1 : 0.35,
+                    border: isServer ? `2px solid ${C.warn}` : (pickSlot && pickable) ? `2px dashed ${C.warn}` : lib ? `2px solid ${C.warn}99` : "2px solid transparent",
                   })}
                   onPointerDown={press} onPointerUp={release} onPointerLeave={release}
-                  onClick={() => onPick(team, idx)}>
-                  <span style={{ fontSize: 9, fontWeight: 900, color: C.dim }}>P{slot}{isServer ? " 🏐" : ""}</span><br />
-                  <span style={{ fontSize: 9, fontWeight: 900, color: posColor(p.pos) }}>{p.pos}</span><br />
+                  onClick={() => onPick(team, idx, lib?.name, slot)}>
+                  <span style={{ fontSize: 9, fontWeight: 900, color: C.dim }}>P{slot}{isServer ? " 🏐" : lib ? " 🦺" : ""}</span><br />
+                  <span style={{ fontSize: 9, fontWeight: 900, color: lib ? C.warn : posColor(p.pos) }}>{p.pos}</span><br />
                   <span style={{ fontSize: 14 }}>{p.name}</span>
                 </button>
               );
             })}
           </div>
         ))}
-        <div style={{ textAlign: "center", fontSize: 9, color: C.dim }}>上段=前衛 / 下段=後衛(P1=サーバー)</div>
+        <div style={{ textAlign: "center", fontSize: 9, color: C.dim }}>{pickSlot ? "後衛(P5/P6、相手サーブ時はP1も)の選手をタップ" : "上段=前衛 / 下段=後衛(P1=サーバー)"}</div>
       </div>
     );
   };
@@ -1885,6 +1909,27 @@ export default function MomentumCoach() {
             })}
           </div>
         )}
+        {/* ★リベロ登録(最大2名)。コート6人には含めず、試合中にP5/P6の後衛守備をオーバーレイ表示する */}
+        <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px dashed ${C.line}` }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+            <span style={{ fontSize: 11, fontWeight: 900, color: C.warn }}>🦺 リベロ登録(最大2名)</span>
+            {liberos[team].length < 2 && (
+              <button onClick={() => setLiberos(L => ({ ...L, [team]: [...L[team], { name: "" }] }))}
+                style={{ background: "none", border: `1px solid ${C.warn}66`, color: C.warnText, borderRadius: 8, padding: "4px 10px", cursor: "pointer", fontWeight: 800, fontSize: 11 }}>＋ 追加</button>
+            )}
+          </div>
+          {liberos[team].length === 0 ? (
+            <div style={{ fontSize: 10, color: C.dim }}>リベロを使う場合は登録してください(任意)。試合中に後衛守備へ出入りできます。</div>
+          ) : liberos[team].map((L, li) => (
+            <div key={li} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+              <span style={{ fontSize: 10, fontWeight: 900, padding: "5px 0", borderRadius: 8, width: 56, textAlign: "center", background: `${C.warn}22`, color: C.warnText, border: `1px solid ${C.warn}55` }}>リベロ</span>
+              <input value={L.name} onChange={e => setLiberos(Ls => ({ ...Ls, [team]: Ls[team].map((x, i) => i === li ? { name: e.target.value } : x) }))} maxLength={10} placeholder="名前"
+                style={{ flex: 1, minWidth: 0, background: "#EEF2FA", border: `1px solid ${C.line}`, borderRadius: 10, color: C.txt, padding: "9px 10px", fontSize: 13, fontWeight: 700, fontFamily: "'M PLUS Rounded 1c', sans-serif", outline: "none" }} />
+              <button onClick={() => setLiberos(Ls => ({ ...Ls, [team]: Ls[team].filter((_, i) => i !== li) }))}
+                style={{ background: "none", border: `1px solid ${C.line}`, color: C.dim, borderRadius: 8, padding: "7px 9px", cursor: "pointer", fontWeight: 800, fontSize: 12 }}>✕</button>
+            </div>
+          ))}
+        </div>
       </div>
     );
   };
@@ -2737,7 +2782,7 @@ export default function MomentumCoach() {
 
           {/* ★ベンチ操作: 手動タイムアウト(チーム別に記録→学習)と選手交代 */}
           {!setEnd && (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
               <button onClick={manualTimeoutUs} disabled={timeoutsLeft <= 0}
                 style={btn(timeoutsLeft > 0 ? "#FFF4DF" : C.surf, { fontSize: 12, padding: "11px 4px", border: `1px solid ${timeoutsLeft > 0 ? "#FFE2C9" : C.line}`, color: timeoutsLeft > 0 ? C.warnText : C.dim })}>
                 ⏱ 自チームTO({timeoutsLeft})
@@ -2746,10 +2791,73 @@ export default function MomentumCoach() {
                 style={btn("#FFECEC", { fontSize: 12, padding: "11px 4px", border: "1px solid #FFD9D9", color: C.them })}>
                 ⏱ 相手TO
               </button>
-              <button onClick={() => setSubbing(s => s ? null : {})}
+              <button onClick={() => { setLibFlow(null); setSubbing(s => s ? null : {}); }}
                 style={btn(subbing ? "#F0EBFF" : C.surf, { fontSize: 12, padding: "11px 4px", border: subbing ? "1px solid #B66EFF" : `1px solid ${C.line}`, color: subbing ? "#7B5BE0" : C.dim })}>
                 🔄 選手交代
               </button>
+              <button onClick={() => { setSubbing(null); setLibFlow(f => f ? null : {}); }}
+                style={btn(libFlow ? "#FFF2DD" : C.surf, { fontSize: 12, padding: "11px 4px", border: libFlow ? `1px solid ${C.warn}` : `1px solid ${C.line}`, color: libFlow ? C.warnText : C.dim })}>
+                🦺 リベロ{(libCover.us || libCover.them) ? " ●" : ""}
+              </button>
+            </div>
+          )}
+
+          {/* ★リベロ出入りフロー: 後衛守備(P5/P6)の実選手をリベロに差し替える。前衛ローテ時は自動で実選手に戻る */}
+          {libFlow && !setEnd && (
+            <div style={{ ...panel, border: `1px solid ${C.warn}66` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                <span style={{ fontSize: 12, fontWeight: 800, color: C.warnText }}>
+                  🦺 リベロ {libFlow.team && `— ${libFlow.team === "us" ? "自チーム" : "相手チーム"}`}
+                </span>
+                <button onClick={() => setLibFlow(null)} style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", fontWeight: 800, fontSize: 13 }}>✕</button>
+              </div>
+              {!libFlow.team ? (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  <button style={btn(`linear-gradient(160deg, ${C.us}, #2456c9)`, { padding: "14px 8px", fontSize: 14 })} onClick={() => setLibFlow({ team: "us" })}>🔵 自チーム</button>
+                  <button style={btn(`linear-gradient(160deg, ${C.them}, #c22a20)`, { padding: "14px 8px", fontSize: 14 })} onClick={() => setLibFlow({ team: "them" })}>🔴 相手チーム</button>
+                </div>
+              ) : liberos[libFlow.team].length === 0 ? (
+                <div style={{ fontSize: 11, color: C.dim, lineHeight: 1.7 }}>
+                  このチームのリベロが未登録です。「⚙ ローテ」設定画面の下部でリベロを登録してください(最大2名)。
+                </div>
+              ) : (<>
+                {libCover[libFlow.team] && (() => {
+                  const cs = slotOfPos(libFlow.team, libCover[libFlow.team].pos);
+                  const onCourt = liberoCanStand(libFlow.team, cs);
+                  return (
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 10, padding: "8px 10px", borderRadius: 10, background: "#FFF6E6", border: `1px solid ${C.warn}44` }}>
+                    <span style={{ fontSize: 11, fontWeight: 800, color: C.warnText }}>
+                      🦺 {liberos[libFlow.team][libCover[libFlow.team].li]?.name || "リベロ"}
+                      <span style={{ color: C.dim, fontWeight: 700 }}>{onCourt ? ` / 出場中(P${cs}の守備)` : ` / 一時退場中(担当者がP${cs}=${cs === 1 ? "サーブ" : "前衛"}のため)`}</span>
+                    </span>
+                    <button onClick={() => { setLibCover(c => ({ ...c, [libFlow.team]: null })); }}
+                      style={{ background: "#fff", border: `1px solid ${C.line}`, color: C.them, borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontWeight: 800, fontSize: 12, flexShrink: 0 }}>解除</button>
+                  </div>
+                  );
+                })()}
+                {libFlow.li == null ? (<>
+                  <div style={{ fontSize: 11, color: C.dim, fontWeight: 700, marginBottom: 8 }}>① 出場するリベロを選ぶ</div>
+                  <div style={{ display: "grid", gridTemplateColumns: liberos[libFlow.team].length > 1 ? "1fr 1fr" : "1fr", gap: 8 }}>
+                    {liberos[libFlow.team].map((L, li) => (
+                      <button key={li} onClick={() => setLibFlow(f => ({ ...f, li }))}
+                        style={btn("linear-gradient(160deg, #6a4a1e, #4a3414)", { padding: "13px 8px", fontSize: 14 })}>🦺 {L.name || `リベロ${li + 1}`}</button>
+                    ))}
+                  </div>
+                </>) : (<>
+                  <div style={{ fontSize: 11, color: C.dim, fontWeight: 700, marginBottom: 8 }}>
+                    ② 🦺 {liberos[libFlow.team][libFlow.li]?.name} と交代する後衛をタップ
+                  </div>
+                  <CourtSelect team={libFlow.team} onPick={(team, idx, _lib, slot) => {
+                    if (!liberoCanStand(team, slot)) return; // 後衛(P1/P5/P6、P1は相手サーブ時)のみ
+                    const pos = (rot[team] + slot - 1) % 6;
+                    setLibCover(c => ({ ...c, [team]: { li: libFlow.li, pos } }));
+                    setLibFlow(null);
+                  }} pickSlot />
+                  <div style={{ fontSize: 10, color: C.dim, marginTop: 6, lineHeight: 1.7 }}>
+                    前衛へローテすると自動でコートを離れ、後衛に戻ると自動で入ります。自チームのサーブ時はP1の実選手がサーブし、相手サーブ時はP1もリベロが守ります。
+                  </div>
+                </>)}
+              </>)}
             </div>
           )}
 
