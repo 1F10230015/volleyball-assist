@@ -8,13 +8,20 @@ const LOCAL_ALERT_THRESHOLD = 3.4;
 const SET_TARGET = 25; // デフォルトの先取点数(セットごとに15点制などへ変更可能)
 const WIN_BY = 2;
 const MAX_TIMEOUTS = 2;
+const MAX_SUBS = 6; // 1セットあたりの選手交代回数の上限(公式ルール)
 
 // ====== ポジション構成(両チーム共通) ======
 const POSITIONS = ["レフト", "レフト", "ライト", "セッター", "センター", "センター"];
 const defaultRoster = () => ({
-  us: POSITIONS.map((pos, i) => ({ pos, name: `選手${"ABCDEF"[i]}` })),
-  them: POSITIONS.map((pos, i) => ({ pos, name: `相手${"ABCDEF"[i]}` })),
+  us: POSITIONS.map((pos, i) => ({ pos, name: `選手${"ABCDEF"[i]}`, no: "" })),
+  them: POSITIONS.map((pos, i) => ({ pos, name: `相手${"ABCDEF"[i]}`, no: "" })),
 });
+const defaultBench = () => ({ us: [], them: [] }); // 控え選手(事前登録) {name, no}
+// ★選手名の表示: 背番号があれば「#12 名前」、無ければ名前のみ
+const pName = p => p ? (p.no ? `#${p.no} ${p.name}` : p.name) : "?";
+// ★名簿の保存/読込(自チームのみ端末に保存 → 次回も使い回せる)
+const ROSTER_KEY = "vbmc_roster_v1";
+function loadSavedRoster() { try { return JSON.parse(localStorage.getItem(ROSTER_KEY)); } catch { return null; } }
 // ★対角ルール: P1-P4 / P2-P5 / P3-P6 が対角(レフト⇔レフト、センター⇔センター、セッター⇔ライト)
 // P1=レフトA(0), P2=セッターD(3), P3=センターE(4), P4=レフトB(1), P5=ライトC(2), P6=センターF(5)
 const DIAGONAL_LINEUP = [0, 3, 4, 1, 2, 5];
@@ -779,7 +786,17 @@ function detectHighlights(sets) {
 let pid = 0;
 
 export default function MomentumCoach() {
-  const [roster, setRoster] = useState(defaultRoster);
+  const [roster, setRoster] = useState(() => {
+    const d = defaultRoster(); const saved = loadSavedRoster();
+    if (saved?.us?.length === 6) d.us = saved.us.map(p => ({ pos: p.pos, name: p.name, no: p.no || "" }));
+    return d;
+  });
+  const [bench, setBench] = useState(() => {
+    const d = defaultBench(); const saved = loadSavedRoster();
+    if (Array.isArray(saved?.bench)) d.us = saved.bench.map(p => ({ name: p.name || "", no: p.no || "" }));
+    return d;
+  });
+  const [subsUsed, setSubsUsed] = useState({ us: 0, them: 0 }); // このセットの交代回数
   const [lineup, setLineup] = useState(defaultLineup);
   const [firstServe, setFirstServe] = useState("us");
   const [log, setLog] = useState([]);
@@ -841,6 +858,7 @@ export default function MomentumCoach() {
   const [editingName, setEditingName] = useState(false);
   const [matchTitle, setMatchTitle] = useState(""); // 記録する試合のタイトル(任意)
   const [viewEntry, setViewEntry] = useState(null); // 学習データの詳細閲覧対象
+  const [reportView, setReportView] = useState(null); // 保存済み試合の詳細レポート再表示対象(entry)
   const [setNo, setSetNo] = useState(1);
   const [setsWon, setSetsWon] = useState({ us: 0, them: 0 });
   const [archived, setArchived] = useState([]);
@@ -859,7 +877,7 @@ export default function MomentumCoach() {
     if (t.libName) return `${t.team === "them" ? "相手" : ""}リベロ・${t.libName}`;
     const p = roster[t.team]?.[t.idx];
     if (!p) return "?";
-    return `${t.team === "them" ? "相手" : ""}${p.pos}・${p.name}`;
+    return `${t.team === "them" ? "相手" : ""}${p.pos}・${pName(p)}`;
   };
 
   // ★学習済みパラメータ(蓄積データから算出、トグルで適用ON/OFF)
@@ -1104,16 +1122,28 @@ export default function MomentumCoach() {
     setAlertS(null); setVerdict(null);
   };
   const manualTimeoutThem = () => { setLog(l => [...l, { type: "timeout", team: "them", t: Date.now() }]); setTicker("相手ベンチがタイムアウト。うちの流れを嫌がったか。"); };
-  // ★選手交代: 控え選手をロスターに追加し、コート上の該当枠を差し替える(記録は履歴・学習へ)
-  const confirmSub = () => {
-    const { team, out, name } = subbing;
-    if (!name?.trim()) return;
-    const pos = roster[team][out].pos;
-    const inIdx = roster[team].length;
-    setRoster(r => ({ ...r, [team]: [...r[team], { pos, name: name.trim() }] }));
+  // ★選手交代: 控えから選手を投入しコート上の枠を差し替える。公式ルール(1セット6回上限)をチェック。
+  // pickIn = { name, no, benchIdx?, backToIdx? }。backToIdxは「元の選手を戻す」再入場(既存ロスター枠)。
+  const confirmSub = (pick) => {
+    const { team, out } = subbing;
+    const pickIn = pick || subbing.pickIn;
+    if (!pickIn || !pickIn.name?.trim()) return;
+    if (subsUsed[team] >= MAX_SUBS) { setTicker(`${team === "us" ? "自チーム" : "相手"}は交代枠をすべて使い切っています(${MAX_SUBS}回)。`); return; }
+    let inIdx;
+    if (typeof pickIn.backToIdx === "number") {
+      inIdx = pickIn.backToIdx; // 既存の選手が再入場(ロスター枠を再利用)
+    } else {
+      const pos = roster[team][out].pos;
+      inIdx = roster[team].length;
+      setRoster(r => ({ ...r, [team]: [...r[team], { pos, name: pickIn.name.trim(), no: pickIn.no || "" }] }));
+    }
     setLineup(l => ({ ...l, [team]: l[team].map(i => i === out ? inIdx : i) }));
     setLog(l => [...l, { type: "sub", team, out, in: inIdx, t: Date.now() }]);
-    setTicker(team === "us" ? `メンバーチェンジ。${name.trim()}、勝負どころで投入!` : "相手がメンバーチェンジ。何か仕掛けてくるぞ。");
+    setSubsUsed(s => ({ ...s, [team]: s[team] + 1 }));
+    // 控えから投入した選手はベンチから外す(ダブり投入防止)
+    if (typeof pickIn.benchIdx === "number")
+      setBench(b => ({ ...b, [team]: b[team].filter((_, i) => i !== pickIn.benchIdx) }));
+    setTicker(team === "us" ? `メンバーチェンジ。${pName({ name: pickIn.name.trim(), no: pickIn.no })}、投入!` : "相手がメンバーチェンジ。何か仕掛けてくるぞ。");
     setSubbing(null);
   };
   const dismiss = () => {
@@ -1132,6 +1162,7 @@ export default function MomentumCoach() {
     setSetNo(n => n + 1); setSetEnd(null); setForecastOpen(false); setTicker(null);
     setFirstServe(f => f === "us" ? "them" : "us");
     setLibCover({ us: null, them: null }); setLibFlow(null); // ローテは毎セット初期化→リベロ割当もリセット(登録名は保持)
+    setSubsUsed({ us: 0, them: 0 }); setSubbing(null); // 交代枠は毎セットリセット
   };
   const nextSet = () => { archiveCurrent(setEnd.winner); resetForNewSet(); setMode("setup"); };
   // ★試合終了時、自動でAI学習データに保存(試合モード=own / 観戦モード=pro)
@@ -1144,7 +1175,7 @@ export default function MomentumCoach() {
       source: matchKind === "scout" ? "pro" : "own",
       label: matchTitle.trim() || def,
       sets: finalSets.map(s => ({ setNo: s.setNo, us: s.us, them: s.them, winner: s.winner, log: s.log })),
-      roster, lineup, liberos,
+      roster, lineup, liberos, bench,
     };
     setLearnEntries(es => { const n = [...es, entry]; saveLearnEntries(n); return n; });
     archiveCurrent(setEnd.winner); resetForNewSet(); setMode("report"); // タイトルはシェア画像用に保持(ホーム遷移でクリア)
@@ -1156,7 +1187,37 @@ export default function MomentumCoach() {
     setSetNo(1); setTimeoutsLeft(MAX_TIMEOUTS); setSetEnd(null);
     judgedAt.current = -1; setVerdict(null); setAlertS(null);
     setMenu(null); setStory(null); setSelSlot(null); setSubbing(null); setForecastOpen(false); setMatchTitle(""); setTicker(null);
-    setLiberos(defaultLiberos()); setLibCover({ us: null, them: null }); setLibFlow(null); setMode("home");
+    setLiberos(defaultLiberos()); setLibCover({ us: null, them: null }); setLibFlow(null);
+    // 交代で追加した枠を落として保存済み名簿(なければ既定)に戻す。控え・交代枠もリセット。
+    const d = defaultRoster(); const saved = loadSavedRoster();
+    if (saved?.us?.length === 6) d.us = saved.us.map(p => ({ pos: p.pos, name: p.name, no: p.no || "" }));
+    setRoster(d); setLineup(defaultLineup());
+    setBench({ us: Array.isArray(saved?.bench) ? saved.bench.map(p => ({ name: p.name || "", no: p.no || "" })) : [], them: [] });
+    setSubsUsed({ us: 0, them: 0 });
+    setReportView(null); setMode("home");
+  };
+
+  // ★保存済み試合の詳細レポートを再表示: entryを現在状態に読み込み、report画面を開く
+  const openSavedReport = (entry) => {
+    const sets = (entry.sets || []).map(s => ({ log: s.log || [], verdicts: [], us: s.us || 0, them: s.them || 0, winner: s.winner, setNo: s.setNo }));
+    setArchived(sets);
+    setLog([]); setVerdicts([]); setSetEnd(null); setTicker(null); setForecastOpen(false);
+    if (entry.roster) setRoster(entry.roster);
+    if (entry.lineup) setLineup(entry.lineup);
+    setLiberos(entry.liberos || defaultLiberos());
+    setBench(entry.bench || defaultBench());
+    setSetsWon({ us: sets.filter(s => s.winner === "us").length, them: sets.filter(s => s.winner === "them").length });
+    setViewEntry(null); setReportView(entry); setMode("report");
+  };
+
+  // ★自チームの名簿(先発6人+控え)を端末に保存 → 次回も呼び出せる
+  const saveRoster = () => {
+    try {
+      localStorage.setItem(ROSTER_KEY, JSON.stringify({
+        us: roster.us.slice(0, 6).map(p => ({ pos: p.pos, name: p.name, no: p.no || "" })),
+        bench: bench.us.filter(p => p.name?.trim()).map(p => ({ name: p.name.trim(), no: p.no || "" })),
+      }));
+    } catch { /* 容量超過等は無視 */ }
   };
 
   const deleteEntry = id => setLearnEntries(es => { const n = es.filter(e => e.id !== id); saveLearnEntries(n); return n; });
@@ -1827,7 +1888,7 @@ export default function MomentumCoach() {
                   onClick={() => onPick(team, idx, lib?.name, slot)}>
                   <span style={{ fontSize: 9, fontWeight: 900, color: C.dim }}>P{slot}{isServer ? " 🏐" : lib ? " 🦺" : ""}</span><br />
                   <span style={{ fontSize: 9, fontWeight: 900, color: lib ? C.warn : posColor(p.pos) }}>{p.pos}</span><br />
-                  <span style={{ fontSize: 14 }}>{p.name}</span>
+                  <span style={{ fontSize: 14 }}>{pName(p)}</span>
                 </button>
               );
             })}
@@ -1878,37 +1939,66 @@ export default function MomentumCoach() {
                   })}>
                   {isServer && <span style={{ position: "absolute", top: 6, right: 8, fontSize: 14 }}>🏐</span>}
                   <span style={{ fontSize: 10, fontWeight: 900, color: C.dim, letterSpacing: 1 }}>P{slot}</span><br />
-                  <span style={{ fontSize: 11, fontWeight: 900, color: posColor(p.pos) }}>{p.pos}</span><br />
+                  <span style={{ fontSize: 11, fontWeight: 900, color: posColor(p.pos) }}>{p.pos}{p.no ? ` ・#${p.no}` : ""}</span><br />
                   <span style={{ fontSize: 16, fontWeight: 900 }}>{p.name}</span>
                 </button>
               );
             })}
           </div>
         ))}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span style={{ fontSize: 10, color: C.dim }}>
-            {selSlot?.team === team ? "👆 入れ替え先のカードをタップ" : "カードを2枚タップで選手を入れ替え"}
-          </span>
-          <button onClick={() => setEditNames(s => ({ ...s, [team]: !s[team] }))}
-            style={{ background: "none", border: `1px solid ${C.line}`, color: C.dim, borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontWeight: 800, fontSize: 11 }}>
-            {editNames[team] ? "✕ 閉じる" : "✏ 名前を編集"}
-          </button>
+        <div style={{ fontSize: 10, color: C.dim, marginBottom: 8 }}>
+          {selSlot?.team === team ? "👆 入れ替え先のカードをタップ" : "カードを2枚タップで配置を入れ替え / 下で背番号・名前を編集"}
         </div>
-        {editNames[team] && (
-          <div style={{ marginTop: 10 }}>
-            {lineup[team].map((rosterIdx, i) => {
-              const p = roster[team][rosterIdx];
-              return (
-                <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
-                  <span style={{ fontFamily: "'Baloo 2'", fontWeight: 700, fontSize: 13, width: 26, color: i === 0 ? C.warn : C.dim }}>P{i + 1}</span>
-                  <span style={{ fontSize: 10, fontWeight: 900, padding: "5px 0", borderRadius: 8, width: 56, textAlign: "center", background: `${posColor(p.pos)}22`, color: posColor(p.pos), border: `1px solid ${posColor(p.pos)}55` }}>{p.pos}</span>
-                  <input value={p.name} onChange={e => editName(team, rosterIdx, e.target.value)} maxLength={10} placeholder="名前"
-                    style={{ flex: 1, minWidth: 0, background: "#EEF2FA", border: `1px solid ${C.line}`, borderRadius: 10, color: C.txt, padding: "9px 10px", fontSize: 13, fontWeight: 700, fontFamily: "'M PLUS Rounded 1c', sans-serif", outline: "none" }} />
-                </div>
-              );
-            })}
+        {/* ★名簿エディタ(常時表示): 背番号 + 名前 */}
+        <div style={{ paddingTop: 8, borderTop: `1px dashed ${C.line}` }}>
+          <div style={{ fontSize: 11, fontWeight: 900, color: isUs ? C.us : C.them, marginBottom: 6 }}>📋 名簿({isUs ? "自" : "相手"}チーム・先発6人)</div>
+          {lineup[team].map((rosterIdx, i) => {
+            const p = roster[team][rosterIdx];
+            return (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                <span style={{ fontFamily: "'Baloo 2'", fontWeight: 700, fontSize: 13, width: 24, color: i === 0 ? C.warn : C.dim }}>P{i + 1}</span>
+                <span style={{ fontSize: 10, fontWeight: 900, padding: "5px 0", borderRadius: 8, width: 52, textAlign: "center", background: `${posColor(p.pos)}22`, color: posColor(p.pos), border: `1px solid ${posColor(p.pos)}55` }}>{p.pos}</span>
+                <input value={p.no || ""} inputMode="numeric" onChange={e => setRoster(r => ({ ...r, [team]: r[team].map((x, k) => k === rosterIdx ? { ...x, no: e.target.value.replace(/[^0-9]/g, "").slice(0, 2) } : x) }))} maxLength={2} placeholder="#"
+                  style={{ width: 42, textAlign: "center", background: "#EEF2FA", border: `1px solid ${C.line}`, borderRadius: 10, color: C.txt, padding: "9px 4px", fontSize: 13, fontWeight: 800, fontFamily: "'Baloo 2'", outline: "none" }} />
+                <input value={p.name} onChange={e => editName(team, rosterIdx, e.target.value)} maxLength={10} placeholder="名前"
+                  style={{ flex: 1, minWidth: 0, background: "#EEF2FA", border: `1px solid ${C.line}`, borderRadius: 10, color: C.txt, padding: "9px 10px", fontSize: 13, fontWeight: 700, fontFamily: "'M PLUS Rounded 1c', sans-serif", outline: "none" }} />
+              </div>
+            );
+          })}
+          {isUs && (
+            <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+              <button onClick={() => { saveRoster(); setTicker("この名簿を保存しました。次回も呼び出せます。"); }}
+                style={{ flex: 1, background: `${C.us}15`, border: `1px solid ${C.us}55`, color: C.us, borderRadius: 10, padding: "8px 6px", cursor: "pointer", fontWeight: 800, fontSize: 11 }}>💾 この名簿を保存</button>
+              <button onClick={() => {
+                const s = loadSavedRoster();
+                if (s?.us?.length === 6) { setRoster(r => ({ ...r, us: s.us.map(p => ({ pos: p.pos, name: p.name, no: p.no || "" })) })); setBench(b => ({ ...b, us: Array.isArray(s.bench) ? s.bench.map(p => ({ name: p.name || "", no: p.no || "" })) : [] })); setTicker("保存した名簿を呼び出しました。"); }
+                else setTicker("保存された名簿がありません。");
+              }}
+                style={{ flex: 1, background: "none", border: `1px solid ${C.line}`, color: C.dim, borderRadius: 10, padding: "8px 6px", cursor: "pointer", fontWeight: 800, fontSize: 11 }}>📂 保存名簿を呼び出し</button>
+            </div>
+          )}
+        </div>
+        {/* ★控え選手(ベンチ)登録: 交代時に一覧から選べる */}
+        <div style={{ marginTop: 10, paddingTop: 8, borderTop: `1px dashed ${C.line}` }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+            <span style={{ fontSize: 11, fontWeight: 900, color: "#7B5BE0" }}>🔄 控え選手(交代候補)</span>
+            <button onClick={() => setBench(b => ({ ...b, [team]: [...b[team], { name: "", no: "" }] }))}
+              style={{ background: "none", border: "1px solid #B66EFF66", color: "#7B5BE0", borderRadius: 8, padding: "4px 10px", cursor: "pointer", fontWeight: 800, fontSize: 11 }}>＋ 追加</button>
           </div>
-        )}
+          {bench[team].length === 0 ? (
+            <div style={{ fontSize: 10, color: C.dim }}>控えを登録すると、試合中の交代で一覧から選べます(任意)。</div>
+          ) : bench[team].map((b, bi) => (
+            <div key={bi} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+              <span style={{ fontSize: 10, fontWeight: 900, padding: "5px 0", borderRadius: 8, width: 52, textAlign: "center", background: "#B66EFF22", color: "#7B5BE0", border: "1px solid #B66EFF55" }}>控え</span>
+              <input value={b.no || ""} inputMode="numeric" onChange={e => setBench(B => ({ ...B, [team]: B[team].map((x, k) => k === bi ? { ...x, no: e.target.value.replace(/[^0-9]/g, "").slice(0, 2) } : x) }))} maxLength={2} placeholder="#"
+                style={{ width: 42, textAlign: "center", background: "#EEF2FA", border: `1px solid ${C.line}`, borderRadius: 10, color: C.txt, padding: "9px 4px", fontSize: 13, fontWeight: 800, fontFamily: "'Baloo 2'", outline: "none" }} />
+              <input value={b.name} onChange={e => setBench(B => ({ ...B, [team]: B[team].map((x, k) => k === bi ? { ...x, name: e.target.value } : x) }))} maxLength={10} placeholder="名前"
+                style={{ flex: 1, minWidth: 0, background: "#EEF2FA", border: `1px solid ${C.line}`, borderRadius: 10, color: C.txt, padding: "9px 10px", fontSize: 13, fontWeight: 700, fontFamily: "'M PLUS Rounded 1c', sans-serif", outline: "none" }} />
+              <button onClick={() => setBench(B => ({ ...B, [team]: B[team].filter((_, k) => k !== bi) }))}
+                style={{ background: "none", border: `1px solid ${C.line}`, color: C.dim, borderRadius: 8, padding: "7px 9px", cursor: "pointer", fontWeight: 800, fontSize: 12 }}>✕</button>
+            </div>
+          ))}
+        </div>
         {/* ★リベロ登録(最大2名)。コート6人には含めず、試合中にP5/P6の後衛守備をオーバーレイ表示する */}
         <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px dashed ${C.line}` }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
@@ -2624,7 +2714,7 @@ export default function MomentumCoach() {
 
           <button style={btn(`linear-gradient(160deg, ${C.us}, #2456c9)`, { fontSize: 20, fontWeight: 900, boxShadow: `0 6px 24px ${C.us}55` })}
             onPointerDown={press} onPointerUp={release} onPointerLeave={release}
-            onClick={() => { setSelSlot(null); setSetTarget(t => t >= 5 ? t : SET_TARGET); setMode("game"); }}>
+            onClick={() => { setSelSlot(null); if (matchKind === "match" && setNo === 1) saveRoster(); setSetTarget(t => t >= 5 ? t : SET_TARGET); setMode("game"); }}>
             {matchKind === "scout" ? "📺 記録開始!" : `🏐 SET ${setNo} 開始!`}{setTarget >= 5 ? `(${setTarget}点先取)` : ""}
           </button>
         </>) : mode === "game" ? (<>
@@ -2632,7 +2722,7 @@ export default function MomentumCoach() {
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div style={{ fontSize: 11, color: C.dim, fontWeight: 700 }}>
               🏐 サーブ: <span style={{ color: rot.serving === "us" ? C.us : C.them, fontWeight: 900 }}>
-                {rot.serving === "us" ? "自チーム" : "相手"} {serverOf(rot.serving).name}
+                {rot.serving === "us" ? "自チーム" : "相手"} {pName(serverOf(rot.serving))}
               </span>(P1)
             </div>
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
@@ -2861,39 +2951,84 @@ export default function MomentumCoach() {
             </div>
           )}
 
-          {/* ★選手交代フロー */}
-          {subbing && !setEnd && (
+          {/* ★選手交代フロー(控え一覧から選択・交代枠カウント・再入場対応) */}
+          {subbing && !setEnd && (() => {
+            const tm = subbing.team;
+            const left = tm ? MAX_SUBS - subsUsed[tm] : MAX_SUBS;
+            // 再入場候補: 過去に交代で下がった選手で、今コートにいない人
+            let reentry = [];
+            if (tm) {
+              const onCourt = new Set(lineup[tm]);
+              reentry = [...new Set(log.filter(r => r.type === "sub" && r.team === tm).map(r => r.out))]
+                .filter(i => !onCourt.has(i)).map(i => ({ idx: i, p: roster[tm][i] }));
+            }
+            return (
             <div style={{ ...panel, border: "1px solid #B66EFF55" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
                 <span style={{ fontSize: 12, fontWeight: 800, color: "#B66EFF" }}>
-                  🔄 選手交代 {subbing.team && `— ${subbing.team === "us" ? "自チーム" : "相手チーム"}`}
+                  🔄 選手交代 {tm && `— ${tm === "us" ? "自チーム" : "相手チーム"}`}
+                  {tm && <span style={{ fontSize: 10, fontWeight: 900, marginLeft: 8, padding: "2px 8px", borderRadius: 8, background: left > 0 ? "#B66EFF22" : "#FFD9D9", color: left > 0 ? "#7B5BE0" : C.them }}>残り{left}回</span>}
                 </span>
                 <button onClick={() => setSubbing(null)} style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", fontWeight: 800, fontSize: 13 }}>✕</button>
               </div>
-              {!subbing.team ? (
+              {!tm ? (
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                   <button style={btn(`linear-gradient(160deg, ${C.us}, #2456c9)`, { padding: "14px 8px", fontSize: 14 })} onClick={() => setSubbing({ team: "us" })}>🔵 自チーム</button>
                   <button style={btn(`linear-gradient(160deg, ${C.them}, #c22a20)`, { padding: "14px 8px", fontSize: 14 })} onClick={() => setSubbing({ team: "them" })}>🔴 相手チーム</button>
                 </div>
+              ) : left <= 0 ? (
+                <div style={{ fontSize: 11, color: C.them, fontWeight: 700, lineHeight: 1.7 }}>
+                  このセットの交代枠({MAX_SUBS}回)を使い切りました。次のセットでリセットされます。
+                </div>
               ) : subbing.out == null ? (<>
-                <div style={{ fontSize: 11, color: C.dim, fontWeight: 700, marginBottom: 8 }}>コートから下がる選手をタップ</div>
-                <CourtSelect team={subbing.team} onPick={(team, idx) => setSubbing(s => ({ ...s, out: idx }))} />
+                <div style={{ fontSize: 11, color: C.dim, fontWeight: 700, marginBottom: 8 }}>① コートから下がる選手をタップ</div>
+                <CourtSelect team={tm} onPick={(team, idx) => setSubbing(s => ({ ...s, out: idx }))} />
               </>) : (<>
                 <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>
-                  OUT: <span style={{ color: C.them }}>{roster[subbing.team][subbing.out].name}</span>({roster[subbing.team][subbing.out].pos})→ 入る選手の名前:
+                  OUT: <span style={{ color: C.them }}>{pName(roster[tm][subbing.out])}</span>({roster[tm][subbing.out].pos}) → ② 入る選手を選ぶ
                 </div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <input value={subbing.name || ""} onChange={e => setSubbing(s => ({ ...s, name: e.target.value }))} maxLength={10} placeholder="名前" autoFocus
+                {bench[tm].filter(b => b.name?.trim()).length > 0 && (
+                  <div style={{ marginBottom: 8 }}>
+                    <div style={{ fontSize: 10, color: C.dim, fontWeight: 800, marginBottom: 4 }}>控えから</div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                      {bench[tm].map((b, bi) => b.name?.trim() && (
+                        <button key={bi} onClick={() => confirmSub({ benchIdx: bi, name: b.name, no: b.no })}
+                          style={{ background: "#B66EFF18", border: "1px solid #B66EFF55", color: "#5b3fb0", borderRadius: 10, padding: "9px 12px", cursor: "pointer", fontWeight: 800, fontSize: 13, fontFamily: "'M PLUS Rounded 1c', sans-serif" }}>
+                          {pName(b)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {reentry.length > 0 && (
+                  <div style={{ marginBottom: 8 }}>
+                    <div style={{ fontSize: 10, color: C.dim, fontWeight: 800, marginBottom: 4 }}>↩ 元の選手を戻す(再入場)</div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                      {reentry.map(({ idx, p }) => (
+                        <button key={idx} onClick={() => confirmSub({ backToIdx: idx, name: p.name, no: p.no })}
+                          style={{ background: `${C.ok}15`, border: `1px solid ${C.ok}66`, color: "#17795a", borderRadius: 10, padding: "9px 12px", cursor: "pointer", fontWeight: 800, fontSize: 13, fontFamily: "'M PLUS Rounded 1c', sans-serif" }}>
+                          ↩ {pName(p)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div style={{ fontSize: 10, color: C.dim, fontWeight: 800, marginBottom: 4 }}>手入力で投入</div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input value={subbing.manualNo || ""} inputMode="numeric" onChange={e => setSubbing(s => ({ ...s, manualNo: e.target.value.replace(/[^0-9]/g, "").slice(0, 2) }))} maxLength={2} placeholder="#"
+                    style={{ width: 46, textAlign: "center", background: "#EEF2FA", border: `1px solid ${C.line}`, borderRadius: 10, color: C.txt, padding: "11px 4px", fontSize: 14, fontWeight: 800, fontFamily: "'Baloo 2'", outline: "none" }} />
+                  <input value={subbing.manualName || ""} onChange={e => setSubbing(s => ({ ...s, manualName: e.target.value }))} maxLength={10} placeholder="名前"
                     style={{ flex: 1, minWidth: 0, background: "#EEF2FA", border: `1px solid ${C.line}`, borderRadius: 10, color: C.txt, padding: "11px 10px", fontSize: 14, fontWeight: 700, fontFamily: "'M PLUS Rounded 1c', sans-serif", outline: "none" }} />
-                  <button onClick={confirmSub} disabled={!subbing.name?.trim()}
-                    style={btn(subbing.name?.trim() ? "linear-gradient(160deg, #1f5e40, #174530)" : "#232d47", { width: 110, fontSize: 13, padding: "11px 6px", border: `1px solid ${subbing.name?.trim() ? C.ok : C.line}` })}>
-                    ✓ 交代する
+                  <button onClick={() => confirmSub({ name: subbing.manualName, no: subbing.manualNo })} disabled={!subbing.manualName?.trim()}
+                    style={btn(subbing.manualName?.trim() ? "linear-gradient(160deg, #1f5e40, #174530)" : "#9fb0c9", { width: 92, fontSize: 13, padding: "11px 6px", border: `1px solid ${subbing.manualName?.trim() ? C.ok : C.line}` })}>
+                    ✓ 投入
                   </button>
                 </div>
-                <div style={{ fontSize: 10, color: C.dim, marginTop: 6 }}>ポジションは{roster[subbing.team][subbing.out].pos}を引き継ぎます。交代後3本の得点率はAI学習センターに蓄積されます。</div>
+                <div style={{ fontSize: 10, color: C.dim, marginTop: 6 }}>ポジションは{roster[tm][subbing.out].pos}を引き継ぎます。交代後3本の得点率はAI学習センターに蓄積されます。</div>
               </>)}
             </div>
-          )}
+            );
+          })()}
 
           {/* ★天気演出: 崩壊リスクが高まると画面に雨が降り、警報レベルでは雷が走る */}
           {forecast && forecast.risk >= 55 && (
@@ -3008,7 +3143,7 @@ export default function MomentumCoach() {
                 </div>
               ) : r.type === "sub" ? (
                 <div key={i} style={{ fontSize: 13, color: "#B66EFF", fontWeight: 800 }}>
-                  🔄 交代({r.team === "us" ? "自" : "相手"}): {roster[r.team]?.[r.out]?.name} → {roster[r.team]?.[r.in]?.name}
+                  🔄 交代({r.team === "us" ? "自" : "相手"}): {pName(roster[r.team]?.[r.out])} → {pName(roster[r.team]?.[r.in])}
                 </div>
               ) : (
                 <div key={i} style={{ fontSize: 13, display: "flex", gap: 8 }}>
@@ -3028,8 +3163,10 @@ export default function MomentumCoach() {
         </>) : (<>
           {/* ============ 分析レポート ============ */}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div style={{ fontWeight: 900, fontSize: 18 }}>📊 試合分析レポート</div>
-            <button style={{ background: "none", border: `1px solid ${C.line}`, color: C.dim, borderRadius: 10, padding: "6px 14px", cursor: "pointer", fontWeight: 700, fontSize: 12 }} onClick={() => setMode(rallies.length ? "game" : "setup")}>← 試合に戻る</button>
+            <div style={{ fontWeight: 900, fontSize: 18, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>📊 {reportView ? reportView.label : "試合分析レポート"}</div>
+            {reportView
+              ? <button style={{ background: "none", border: `1px solid ${C.line}`, color: C.dim, borderRadius: 10, padding: "6px 14px", cursor: "pointer", fontWeight: 700, fontSize: 12, flexShrink: 0 }} onClick={goHome}>← ホーム</button>
+              : <button style={{ background: "none", border: `1px solid ${C.line}`, color: C.dim, borderRadius: 10, padding: "6px 14px", cursor: "pointer", fontWeight: 700, fontSize: 12, flexShrink: 0 }} onClick={() => setMode(rallies.length ? "game" : "setup")}>← 試合に戻る</button>}
           </div>
 
           <div style={{ ...panel, textAlign: "center" }}>
@@ -3297,7 +3434,7 @@ export default function MomentumCoach() {
         {viewEntry && (() => {
           const e = viewEntry;
           const ros = e.roster;
-          const lab = t => { const p = ros?.[t.team]?.[t.idx]; return p ? `${t.team === "them" ? "相手" : ""}${p.pos}・${p.name}` : `${t.team === "them" ? "相手" : "自"}選手`; };
+          const lab = t => { const p = ros?.[t.team]?.[t.idx]; return p ? `${t.team === "them" ? "相手" : ""}${p.pos}・${pName(p)}` : `${t.team === "them" ? "相手" : "自"}選手`; };
           const allR = (e.sets || []).flatMap(s => (s.log || []).filter(r => r.type === "rally"));
           const tos = (e.sets || []).flatMap(s => (s.log || []).filter(r => r.type === "timeout")).length;
           const subs = (e.sets || []).flatMap(s => (s.log || []).filter(r => r.type === "sub")).length;
@@ -3361,12 +3498,15 @@ export default function MomentumCoach() {
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                       {ros.us.map((p, i) => (
                         <span key={i} style={{ fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 10, background: C.surf, color: C.txt }}>
-                          <span style={{ color: posColor(p.pos), fontWeight: 900 }}>{p.pos}</span> {p.name}
+                          <span style={{ color: posColor(p.pos), fontWeight: 900 }}>{p.pos}</span> {pName(p)}
                         </span>
                       ))}
                     </div>
                   </div>
                 )}
+                <button style={btn(`linear-gradient(160deg, ${C.us}, #2456c9)`, { fontSize: 14, padding: "13px 8px" })} onClick={() => openSavedReport(e)}>
+                  📊 詳細レポートを見る(名場面・ヒートマップ・ローテ分析ほか)
+                </button>
                 <button style={btn(C.surf, { color: C.txt, fontSize: 13, padding: "12px 8px" })} onClick={() => setViewEntry(null)}>閉じる</button>
               </div>
             </div>
