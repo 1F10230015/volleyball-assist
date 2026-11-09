@@ -2307,7 +2307,7 @@ export default function MomentumCoach() {
             <input type="password" value={apiKey} onChange={e => saveApiKey(e.target.value.trim())} placeholder="sk-ant-..."
               style={{ width: "100%", boxSizing: "border-box", background: "#EEF2FA", border: `1px solid ${C.line}`, borderRadius: 10, color: C.txt, padding: "11px 10px", fontSize: 13, fontFamily: "monospace", outline: "none" }} />
             <div style={{ fontSize: 10, color: C.dim, marginTop: 6, lineHeight: 1.7 }}>
-              設定するとTO判定・AI実況・練習メニュー・戦術レポート・フォーム助言がClaude AIで文章生成されます。未設定でも、その時の試合データ・計測値から内蔵ロジックが助言を組み立てます(毎回内容は変わります)。キーはこの端末のlocalStorageにのみ保存され、Anthropic以外には送信されません。
+              設定するとTO判定・AI実況・戦術レポートがClaude AIで文章生成されます。未設定でも、その時の試合データから内蔵ロジックが助言を組み立てます(毎回内容は変わります)。キーはこの端末のlocalStorageにのみ保存され、Anthropic以外には送信されません。
             </div>
           </div>
 
@@ -3337,12 +3337,16 @@ export default function MomentumCoach() {
           </div>
 
           <div style={panel}>
-            <div style={{ fontSize: 12, color: C.dim, fontWeight: 800, marginBottom: 10 }}>🎯 弱点パターン → 次回練習メニュー</div>
-            {topLossPlay.length > 0 && (
-              <div style={{ fontSize: 13, lineHeight: 1.8, marginBottom: 10 }}>
+            <div style={{ fontSize: 12, color: C.dim, fontWeight: 800, marginBottom: 10 }}>🎯 失点の弱点パターン(プレー種別)</div>
+            {topLossPlay.length > 0 ? (
+              <div style={{ fontSize: 13, lineHeight: 1.8 }}>
                 失点内訳: {topLossPlay.map(([k, v]) => `${k} ${v}本`).join(" / ")}
               </div>
+            ) : (
+              <div style={{ fontSize: 12, color: C.dim }}>失点データがまだありません。</div>
             )}
+            {/* ▼ AI練習メニュー生成: 一旦停止(研究の主軸=試合中のTO判断支援の外で、生成内容が汎用的なため)。
+                 復活時はこのコメントを外すだけ。practiceMenu/genMenu等のロジックは下部に温存。
             {!menu ? (
               <button style={btn(`linear-gradient(160deg, ${C.us}, #2456c9)`, { fontSize: 15, padding: "14px 8px" })} onClick={genMenu} disabled={menuLoading}>
                 {menuLoading ? "🤖 AIがメニュー作成中…" : "🤖 AIに練習メニューを作らせる"}
@@ -3353,6 +3357,7 @@ export default function MomentumCoach() {
                 <div style={{ fontSize: 12, color: C.dim, marginTop: 4, lineHeight: 1.6 }}>{d.desc}</div>
               </div>
             ))}
+            */}
           </div>
 
           <div style={{ fontSize: 11, color: C.ok, fontWeight: 800, textAlign: "center" }}>
