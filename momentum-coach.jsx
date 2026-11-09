@@ -18,7 +18,7 @@ const defaultRoster = () => ({
 });
 const defaultBench = () => ({ us: [], them: [] }); // 控え選手(事前登録) {name, no}
 // ★選手名の表示: 背番号があれば「#12 名前」、無ければ名前のみ
-const pName = p => p ? (p.no ? `#${p.no} ${p.name}` : p.name) : "?";
+const pName = p => p ? (p.no ? (p.name ? `#${p.no} ${p.name}` : `#${p.no}`) : (p.name || "選手")) : "?";
 // ★名簿の保存/読込(自チームのみ端末に保存 → 次回も使い回せる)
 const ROSTER_KEY = "vbmc_roster_v1";
 function loadSavedRoster() { try { return JSON.parse(localStorage.getItem(ROSTER_KEY)); } catch { return null; } }
@@ -1127,7 +1127,8 @@ export default function MomentumCoach() {
   const confirmSub = (pick) => {
     const { team, out } = subbing;
     const pickIn = pick || subbing.pickIn;
-    if (!pickIn || !pickIn.name?.trim()) return;
+    // 名前または背番号のどちらかがあれば交代可(番号だけの選手=再入場も通す)
+    if (!pickIn || (!pickIn.name?.trim() && !String(pickIn.no ?? "").trim())) return;
     if (subsUsed[team] >= MAX_SUBS) { setTicker(`${team === "us" ? "自チーム" : "相手"}は交代枠をすべて使い切っています(${MAX_SUBS}回)。`); return; }
     let inIdx;
     if (typeof pickIn.backToIdx === "number") {
@@ -1135,7 +1136,7 @@ export default function MomentumCoach() {
     } else {
       const pos = roster[team][out].pos;
       inIdx = roster[team].length;
-      setRoster(r => ({ ...r, [team]: [...r[team], { pos, name: pickIn.name.trim(), no: pickIn.no || "" }] }));
+      setRoster(r => ({ ...r, [team]: [...r[team], { pos, name: (pickIn.name || "").trim(), no: pickIn.no || "" }] }));
     }
     setLineup(l => ({ ...l, [team]: l[team].map(i => i === out ? inIdx : i) }));
     setLog(l => [...l, { type: "sub", team, out, in: inIdx, t: Date.now() }]);
@@ -1143,7 +1144,7 @@ export default function MomentumCoach() {
     // 控えから投入した選手はベンチから外す(ダブり投入防止)
     if (typeof pickIn.benchIdx === "number")
       setBench(b => ({ ...b, [team]: b[team].filter((_, i) => i !== pickIn.benchIdx) }));
-    setTicker(team === "us" ? `メンバーチェンジ。${pName({ name: pickIn.name.trim(), no: pickIn.no })}、投入!` : "相手がメンバーチェンジ。何か仕掛けてくるぞ。");
+    setTicker(team === "us" ? `メンバーチェンジ。${pName({ name: (pickIn.name || "").trim(), no: pickIn.no })}、投入!` : "相手がメンバーチェンジ。何か仕掛けてくるぞ。");
     setSubbing(null);
   };
   const dismiss = () => {
@@ -3019,10 +3020,12 @@ export default function MomentumCoach() {
                     style={{ width: 46, textAlign: "center", background: "#EEF2FA", border: `1px solid ${C.line}`, borderRadius: 10, color: C.txt, padding: "11px 4px", fontSize: 14, fontWeight: 800, fontFamily: "'Baloo 2'", outline: "none" }} />
                   <input value={subbing.manualName || ""} onChange={e => setSubbing(s => ({ ...s, manualName: e.target.value }))} maxLength={10} placeholder="名前"
                     style={{ flex: 1, minWidth: 0, background: "#EEF2FA", border: `1px solid ${C.line}`, borderRadius: 10, color: C.txt, padding: "11px 10px", fontSize: 14, fontWeight: 700, fontFamily: "'M PLUS Rounded 1c', sans-serif", outline: "none" }} />
-                  <button onClick={() => confirmSub({ name: subbing.manualName, no: subbing.manualNo })} disabled={!subbing.manualName?.trim()}
-                    style={btn(subbing.manualName?.trim() ? "linear-gradient(160deg, #1f5e40, #174530)" : "#9fb0c9", { width: 92, fontSize: 13, padding: "11px 6px", border: `1px solid ${subbing.manualName?.trim() ? C.ok : C.line}` })}>
+                  {(() => { const ok = !!(subbing.manualName?.trim() || subbing.manualNo?.trim()); return (
+                  <button onClick={() => confirmSub({ name: subbing.manualName, no: subbing.manualNo })} disabled={!ok}
+                    style={btn(ok ? "linear-gradient(160deg, #1f5e40, #174530)" : "#9fb0c9", { width: 92, fontSize: 13, padding: "11px 6px", border: `1px solid ${ok ? C.ok : C.line}` })}>
                     ✓ 投入
                   </button>
+                  ); })()}
                 </div>
                 <div style={{ fontSize: 10, color: C.dim, marginTop: 6 }}>ポジションは{roster[tm][subbing.out].pos}を引き継ぎます。交代後3本の得点率はAI学習センターに蓄積されます。</div>
               </>)}
