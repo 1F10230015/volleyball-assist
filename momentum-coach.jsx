@@ -797,7 +797,12 @@ export default function MomentumCoach() {
     return d;
   });
   const [subsUsed, setSubsUsed] = useState({ us: 0, them: 0 }); // このセットの交代回数
-  const [lineup, setLineup] = useState(defaultLineup);
+  const [rosterMsg, setRosterMsg] = useState(null); // 名簿の保存/呼び出しのフィードバック(setup画面用)
+  const [lineup, setLineup] = useState(() => {
+    const d = defaultLineup(); const saved = loadSavedRoster();
+    if (Array.isArray(saved?.lineup) && saved.lineup.length === 6) d.us = saved.lineup.slice(0, 6);
+    return d;
+  });
   const [firstServe, setFirstServe] = useState("us");
   const [log, setLog] = useState([]);
   const [step, setStep] = useState(0);
@@ -1192,9 +1197,11 @@ export default function MomentumCoach() {
     // 交代で追加した枠を落として保存済み名簿(なければ既定)に戻す。控え・交代枠もリセット。
     const d = defaultRoster(); const saved = loadSavedRoster();
     if (saved?.us?.length === 6) d.us = saved.us.map(p => ({ pos: p.pos, name: p.name, no: p.no || "" }));
-    setRoster(d); setLineup(defaultLineup());
+    const dl = defaultLineup();
+    if (Array.isArray(saved?.lineup) && saved.lineup.length === 6) dl.us = saved.lineup.slice(0, 6);
+    setRoster(d); setLineup(dl);
     setBench({ us: Array.isArray(saved?.bench) ? saved.bench.map(p => ({ name: p.name || "", no: p.no || "" })) : [], them: [] });
-    setSubsUsed({ us: 0, them: 0 });
+    setSubsUsed({ us: 0, them: 0 }); setRosterMsg(null);
     setReportView(null); setMode("home");
   };
 
@@ -1216,6 +1223,7 @@ export default function MomentumCoach() {
     try {
       localStorage.setItem(ROSTER_KEY, JSON.stringify({
         us: roster.us.slice(0, 6).map(p => ({ pos: p.pos, name: p.name, no: p.no || "" })),
+        lineup: Array.isArray(lineup.us) ? lineup.us.slice(0, 6) : null, // ローテ配置(ポジション)も保存
         bench: bench.us.filter(p => p.name?.trim()).map(p => ({ name: p.name.trim(), no: p.no || "" })),
       }));
     } catch { /* 容量超過等は無視 */ }
@@ -1966,18 +1974,32 @@ export default function MomentumCoach() {
               </div>
             );
           })}
-          {isUs && (
+          {isUs && (<>
             <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-              <button onClick={() => { saveRoster(); setTicker("この名簿を保存しました。次回も呼び出せます。"); }}
+              <button onClick={() => { saveRoster(); setRosterMsg({ ok: true, t: "✓ この名簿を保存しました(次回も呼び出せます)" }); }}
                 style={{ flex: 1, background: `${C.us}15`, border: `1px solid ${C.us}55`, color: C.us, borderRadius: 10, padding: "8px 6px", cursor: "pointer", fontWeight: 800, fontSize: 11 }}>💾 この名簿を保存</button>
               <button onClick={() => {
                 const s = loadSavedRoster();
-                if (s?.us?.length === 6) { setRoster(r => ({ ...r, us: s.us.map(p => ({ pos: p.pos, name: p.name, no: p.no || "" })) })); setBench(b => ({ ...b, us: Array.isArray(s.bench) ? s.bench.map(p => ({ name: p.name || "", no: p.no || "" })) : [] })); setTicker("保存した名簿を呼び出しました。"); }
-                else setTicker("保存された名簿がありません。");
+                const arr = Array.isArray(s?.us) ? s.us : null;
+                if (arr && arr.length) {
+                  // 6人に満たなければ既定で補完、多ければ先頭6人
+                  const base = defaultRoster().us;
+                  const us6 = Array.from({ length: 6 }, (_, i) => {
+                    const p = arr[i];
+                    return p ? { pos: p.pos || base[i].pos, name: p.name || "", no: p.no || "" } : { ...base[i] };
+                  });
+                  setRoster(r => ({ ...r, us: us6 }));
+                  if (Array.isArray(s.lineup) && s.lineup.length === 6) setLineup(l => ({ ...l, us: s.lineup.slice(0, 6) }));
+                  setBench(b => ({ ...b, us: Array.isArray(s.bench) ? s.bench.map(p => ({ name: p.name || "", no: p.no || "" })) : [] }));
+                  setRosterMsg({ ok: true, t: "✓ 保存した名簿を呼び出しました" });
+                } else {
+                  setRosterMsg({ ok: false, t: "保存された名簿がありません。先に「💾 この名簿を保存」を押してください" });
+                }
               }}
                 style={{ flex: 1, background: "none", border: `1px solid ${C.line}`, color: C.dim, borderRadius: 10, padding: "8px 6px", cursor: "pointer", fontWeight: 800, fontSize: 11 }}>📂 保存名簿を呼び出し</button>
             </div>
-          )}
+            {rosterMsg && <div style={{ fontSize: 11, fontWeight: 800, marginTop: 6, color: rosterMsg.ok ? C.ok : C.warn }}>{rosterMsg.t}</div>}
+          </>)}
         </div>
         {/* ★控え選手(ベンチ)登録: 交代時に一覧から選べる */}
         <div style={{ marginTop: 10, paddingTop: 8, borderTop: `1px dashed ${C.line}` }}>
