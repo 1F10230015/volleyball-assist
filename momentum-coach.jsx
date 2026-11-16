@@ -798,6 +798,8 @@ export default function MomentumCoach() {
   });
   const [subsUsed, setSubsUsed] = useState({ us: 0, them: 0 }); // このセットの交代回数
   const [rosterMsg, setRosterMsg] = useState(null); // 名簿の保存/呼び出しのフィードバック(setup画面用)
+  const [showExtras, setShowExtras] = useState({ us: false, them: false }); // 控え・リベロ登録の開閉
+  const [showThem, setShowThem] = useState(false); // 相手チーム設定の開閉(既定=閉)
   const [lineup, setLineup] = useState(() => {
     const d = defaultLineup(); const saved = loadSavedRoster();
     if (Array.isArray(saved?.lineup) && saved.lineup.length === 6) d.us = saved.lineup.slice(0, 6);
@@ -880,6 +882,7 @@ export default function MomentumCoach() {
 
   const labelOf = t => {
     if (t.libName) return `${t.team === "them" ? "相手" : ""}リベロ・${t.libName}`;
+    if (t.unknown || t.idx == null || t.idx < 0) return `${t.team === "them" ? "相手" : ""}選手(不明)`;
     const p = roster[t.team]?.[t.idx];
     if (!p) return "?";
     return `${t.team === "them" ? "相手" : ""}${p.pos}・${pName(p)}`;
@@ -1202,6 +1205,7 @@ export default function MomentumCoach() {
     setRoster(d); setLineup(dl);
     setBench({ us: Array.isArray(saved?.bench) ? saved.bench.map(p => ({ name: p.name || "", no: p.no || "" })) : [], them: [] });
     setSubsUsed({ us: 0, them: 0 }); setRosterMsg(null);
+    setShowThem(false); setShowExtras({ us: false, them: false });
     setReportView(null); setMode("home");
   };
 
@@ -1955,8 +1959,15 @@ export default function MomentumCoach() {
             })}
           </div>
         ))}
-        <div style={{ fontSize: 10, color: C.dim, marginBottom: 8 }}>
-          {selSlot?.team === team ? "👆 入れ替え先のカードをタップ" : "カードを2枚タップで配置を入れ替え / 下で背番号・名前を編集"}
+        <div style={{ fontSize: 10, color: C.dim, marginBottom: 6 }}>
+          {selSlot?.team === team ? "👆 入れ替え先のカードをタップ" : "カードを2枚タップで入れ替え、または下のボタンでローテを回す"}
+        </div>
+        {/* ★ローテを回す: 全員を1つずつ回転(P2→P1…P1→P6)。対角は保たれる */}
+        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+          <button onClick={() => { setSelSlot(null); setLineup(l => { const a = l[team]; return { ...l, [team]: [a[5], a[0], a[1], a[2], a[3], a[4]] }; }); }}
+            style={{ flex: 1, background: C.surf, border: `1px solid ${C.line}`, color: C.txt, borderRadius: 10, padding: "9px 6px", cursor: "pointer", fontWeight: 800, fontSize: 12 }}>↩ 逆に回す</button>
+          <button onClick={() => { setSelSlot(null); setLineup(l => { const a = l[team]; return { ...l, [team]: [a[1], a[2], a[3], a[4], a[5], a[0]] }; }); }}
+            style={{ flex: 1, background: `${(isUs ? C.us : C.them)}15`, border: `1px solid ${(isUs ? C.us : C.them)}55`, color: isUs ? C.us : C.them, borderRadius: 10, padding: "9px 6px", cursor: "pointer", fontWeight: 800, fontSize: 12 }}>🔄 ローテを1つ回す</button>
         </div>
         {/* ★名簿エディタ(常時表示): 背番号 + 名前 */}
         <div style={{ paddingTop: 8, borderTop: `1px dashed ${C.line}` }}>
@@ -1969,11 +1980,12 @@ export default function MomentumCoach() {
                 <span style={{ fontSize: 10, fontWeight: 900, padding: "5px 0", borderRadius: 8, width: 52, textAlign: "center", background: `${posColor(p.pos)}22`, color: posColor(p.pos), border: `1px solid ${posColor(p.pos)}55` }}>{p.pos}</span>
                 <input value={p.no || ""} inputMode="numeric" onChange={e => setRoster(r => ({ ...r, [team]: r[team].map((x, k) => k === rosterIdx ? { ...x, no: e.target.value.replace(/[^0-9]/g, "").slice(0, 2) } : x) }))} maxLength={2} placeholder="#"
                   style={{ width: 42, textAlign: "center", background: "#EEF2FA", border: `1px solid ${C.line}`, borderRadius: 10, color: C.txt, padding: "9px 4px", fontSize: 13, fontWeight: 800, fontFamily: "'Baloo 2'", outline: "none" }} />
-                <input value={p.name} onChange={e => editName(team, rosterIdx, e.target.value)} maxLength={10} placeholder="名前"
+                <input value={p.name} onChange={e => editName(team, rosterIdx, e.target.value)} maxLength={10} placeholder={isUs ? "名前" : "名前(任意)"}
                   style={{ flex: 1, minWidth: 0, background: "#EEF2FA", border: `1px solid ${C.line}`, borderRadius: 10, color: C.txt, padding: "9px 10px", fontSize: 13, fontWeight: 700, fontFamily: "'M PLUS Rounded 1c', sans-serif", outline: "none" }} />
               </div>
             );
           })}
+          {!isUs && <div style={{ fontSize: 10, color: C.dim, marginTop: 2 }}>相手は背番号だけでOK(名前は任意)。</div>}
           {isUs && (<>
             <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
               <button onClick={() => { saveRoster(); setRosterMsg({ ok: true, t: "✓ この名簿を保存しました(次回も呼び出せます)" }); }}
@@ -2001,6 +2013,12 @@ export default function MomentumCoach() {
             {rosterMsg && <div style={{ fontSize: 11, fontWeight: 800, marginTop: 6, color: rosterMsg.ok ? C.ok : C.warn }}>{rosterMsg.t}</div>}
           </>)}
         </div>
+        {/* ★控え・リベロ登録(任意)は折りたたみ。先発だけ置きたい時はスクロール不要に */}
+        <button onClick={() => setShowExtras(s => ({ ...s, [team]: !s[team] }))}
+          style={{ marginTop: 10, width: "100%", background: "none", border: `1px dashed ${C.line}`, color: C.dim, borderRadius: 10, padding: "9px 6px", cursor: "pointer", fontWeight: 800, fontSize: 11 }}>
+          {showExtras[team] ? "▲ 控え・リベロ登録を閉じる" : `▼ 控え・リベロを登録(任意)${(bench[team].filter(b => b.name?.trim()).length || liberos[team].length) ? ` ・登録済` : ""}`}
+        </button>
+        {showExtras[team] && (<>
         {/* ★控え選手(ベンチ)登録: 交代時に一覧から選べる */}
         <div style={{ marginTop: 10, paddingTop: 8, borderTop: `1px dashed ${C.line}` }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
@@ -2043,6 +2061,7 @@ export default function MomentumCoach() {
             </div>
           ))}
         </div>
+        </>)}
       </div>
     );
   };
@@ -2711,7 +2730,12 @@ export default function MomentumCoach() {
           </div>
 
           {renderCourtSetup("us")}
-          {renderCourtSetup("them")}
+          {/* 相手チーム設定は折りたたみ(既定=閉)。番号だけサッと入れたい時だけ開く */}
+          <button onClick={() => setShowThem(v => !v)}
+            style={{ width: "100%", background: showThem ? "#FFECEC" : C.surf, border: `1px solid ${showThem ? C.them + "55" : C.line}`, color: showThem ? C.them : C.dim, borderRadius: 14, padding: "12px 10px", cursor: "pointer", fontWeight: 900, fontSize: 13 }}>
+            {showThem ? "▲ 相手チームの設定を閉じる" : "▼ 相手チームを設定する(任意・番号だけでOK)"}
+          </button>
+          {showThem && renderCourtSetup("them")}
 
           {/* ★AIローテ最適化(学習データより) */}
           {matchKind === "match" && learnApply && learned && learned.byServerN >= 24 && (() => {
@@ -2878,10 +2902,18 @@ export default function MomentumCoach() {
                   ))}
                 </div>
               )}
-              {step === 2 && <CourtSelect team={targetTeamFor(pending)} onPick={tap3} />}
+              {step === 2 && (<>
+                <CourtSelect team={targetTeamFor(pending)} onPick={tap3} />
+                <button style={{ marginTop: 8, background: "#EEF2FA", border: `1px solid ${C.line}`, color: C.dim, borderRadius: 12, padding: "11px 16px", width: "100%", cursor: "pointer", fontWeight: 800, fontSize: 13 }}
+                  onPointerDown={press} onPointerUp={release} onPointerLeave={release}
+                  onClick={() => commitRally(pending, { team: targetTeamFor(pending), idx: -1, unknown: true })}>
+                  ✓ 選手は記録せず進む(不明)
+                </button>
+              </>)}
             </div>
             {step > 0 && (
-              <button style={{ marginTop: 10, background: "none", border: `1px solid ${C.line}`, color: C.dim, borderRadius: 12, padding: "9px 16px", width: "100%", cursor: "pointer", fontWeight: 700 }} onClick={() => { setStep(0); setPending({}); }}>← やり直す</button>
+              <button style={{ marginTop: 10, background: "none", border: `1px solid ${C.line}`, color: C.dim, borderRadius: 12, padding: "9px 16px", width: "100%", cursor: "pointer", fontWeight: 700 }}
+                onClick={() => { if (step === 2) { setStep(1); setPending(p => ({ e: p.e })); } else { setStep(0); setPending({}); } }}>← 1つ戻る</button>
             )}
           </div>
 
