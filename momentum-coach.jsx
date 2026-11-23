@@ -500,6 +500,11 @@ function loadLearnEntries() {
 function saveLearnEntries(entries) {
   try { localStorage.setItem(LEARN_KEY, JSON.stringify(entries)); } catch { /* 容量超過等は無視 */ }
 }
+// ★試合の「中身の指紋」: 最初のラリーの記録時刻+総ラリー数。端末をまたいでも同じ試合なら一致する(重複判定用)
+function entrySig(e) {
+  const rs = (e?.sets || []).flatMap(s => (s.log || []).filter(r => r.type === "rally"));
+  return rs.length && rs[0].t ? `${rs[0].t}-${rs.length}` : null;
+}
 
 function computeLearnedParams(entries) {
   if (!entries.length) return null;
@@ -1234,6 +1239,18 @@ export default function MomentumCoach() {
   };
 
   const deleteEntry = id => setLearnEntries(es => { const n = es.filter(e => e.id !== id); saveLearnEntries(n); return n; });
+  // ★すでに端末内にある重複試合を整理(同じid/同じ中身は最初の1件だけ残す)
+  const dedupeEntries = () => {
+    const ids = new Set(), sigs = new Set(), keep = [];
+    for (const x of learnEntries) {
+      const sg = entrySig(x);
+      if (ids.has(String(x.id)) || (sg && sigs.has(sg))) continue;
+      ids.add(String(x.id)); if (sg) sigs.add(sg); keep.push(x);
+    }
+    const removed = learnEntries.length - keep.length;
+    if (removed) { setLearnEntries(keep); saveLearnEntries(keep); }
+    setImportMsg(removed ? `✓ 重複していた${removed}件を整理しました` : "✓ 重複はありませんでした");
+  };
 
   // ★学習データのインポート(このアプリのエクスポートJSON or 学習バンドル)
   const handleImport = e => {
@@ -1246,8 +1263,10 @@ export default function MomentumCoach() {
         let added = [];
         if (data.type === "vbmc-learning" && Array.isArray(data.entries)) added = data.entries;
         else if (Array.isArray(data.sets)) {
+          const firstT = data.sets.flatMap(s => s.log || []).find(r => r.type === "rally")?.t;
           added = [{
-            id: Date.now(), savedAt: data.exportedAt || new Date().toISOString(), source: "pro",
+            id: firstT ? `m${firstT}` : Date.now(), // 中身由来の安定ID → 同じファイルを再インポートしても重複しない
+            savedAt: data.exportedAt || new Date().toISOString(), source: "pro",
             label: file.name.replace(/\.json$/i, ""),
             sets: data.sets.map(s => ({
               setNo: s.setNo, winner: s.winner, log: s.log || [],
@@ -1257,8 +1276,22 @@ export default function MomentumCoach() {
           }];
         }
         if (added.length) {
-          setLearnEntries(es => { const n = [...es, ...added]; saveLearnEntries(n); return n; });
-          setImportMsg(`✓ ${added.length}件の試合データを学習に追加しました`);
+          // ★重複排除: 同じid、または同じ中身(最初のラリー時刻+ラリー数)の試合は取り込まない
+          const cur = learnEntries;
+          const ids = new Set(cur.map(x => String(x.id)));
+          const sigs = new Set(cur.map(entrySig).filter(Boolean));
+          const fresh = [];
+          for (const x of added) {
+            const sg = entrySig(x);
+            if (ids.has(String(x.id)) || (sg && sigs.has(sg))) continue;
+            ids.add(String(x.id)); if (sg) sigs.add(sg);
+            fresh.push(x);
+          }
+          const skipped = added.length - fresh.length;
+          if (fresh.length) setLearnEntries(es => { const n = [...es, ...fresh]; saveLearnEntries(n); return n; });
+          setImportMsg(fresh.length
+            ? `✓ ${fresh.length}件を追加しました${skipped ? `(${skipped}件は取り込み済みのためスキップ)` : ""}`
+            : `✓ すべて取り込み済みでした(${skipped}件スキップ・重複なし)`);
         } else setImportMsg("⚠ 対応していない形式です(このアプリのエクスポートJSONを指定してください)");
       } catch { setImportMsg("⚠ 読み込みに失敗しました"); }
     };
@@ -2362,6 +2395,12 @@ export default function MomentumCoach() {
             <button style={btn(C.surf, { color: C.txt, fontSize: 13, padding: "12px 8px", marginBottom: 8 })} onClick={exportLearn} disabled={!learnEntries.length}>
               💾 学習データ一式をエクスポート
             </button>
+            <button style={btn(C.surf, { color: C.txt, fontSize: 13, padding: "12px 8px", marginBottom: 8 })} onClick={dedupeEntries} disabled={!learnEntries.length}>
+              🧹 重複した試合を整理(同じ試合は1件に)
+            </button>
+            <div style={{ fontSize: 10, color: C.dim, marginBottom: 8, lineHeight: 1.7 }}>
+              PC↔スマホで一式を何度インポートしても、取り込み済みの試合は自動でスキップされます(重複しません)。
+            </div>
             <button style={btn(`linear-gradient(160deg, ${C.ok}, #1f9e73)`, { fontSize: 13, padding: "12px 8px", marginBottom: 10 })} onClick={exportAnalysisCsv} disabled={!learnEntries.length}>
               📊 TO効果の分析CSVを書き出す(研究用 / Q2)
             </button>
